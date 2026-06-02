@@ -664,6 +664,104 @@ mod test {
     }
 
     #[test]
+    fn test_remove_clue_success_in_draft() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+        env.mock_all_auths();
+        let creator = Address::generate(&env);
+        let title = String::from_str(&env, "Hunt");
+        let description = String::from_str(&env, "Desc");
+        let answer = String::from_str(&env, "a");
+
+        let (hunt, list, removed) = with_core_contract(&env, |env, _cid| {
+            let hid = HuntyCore::create_hunt(
+                env.clone(),
+                creator.clone(),
+                title,
+                description,
+                None,
+                None,
+            )
+            .unwrap();
+            HuntyCore::add_clue(
+                env.clone(),
+                hid,
+                String::from_str(env, "Q1"),
+                answer.clone(),
+                1,
+                false,
+            )
+            .unwrap();
+            let removed_id = HuntyCore::add_clue(
+                env.clone(),
+                hid,
+                String::from_str(env, "Q2"),
+                answer.clone(),
+                2,
+                true,
+            )
+            .unwrap();
+            HuntyCore::add_clue(
+                env.clone(),
+                hid,
+                String::from_str(env, "Q3"),
+                answer,
+                3,
+                true,
+            )
+            .unwrap();
+            HuntyCore::remove_clue(env.clone(), hid, removed_id, creator.clone()).unwrap();
+            (
+                Storage::get_hunt(env, hid).unwrap(),
+                HuntyCore::list_clues(env.clone(), hid),
+                HuntyCore::get_clue(env.clone(), hid, removed_id).unwrap_err(),
+            )
+        });
+
+        assert_eq!(hunt.total_clues, 2);
+        assert_eq!(hunt.required_clues, 1);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list.get(0).unwrap().clue_id, 1);
+        assert_eq!(list.get(1).unwrap().clue_id, 3);
+        assert_eq!(removed, HuntErrorCode::ClueNotFound);
+    }
+
+    #[test]
+    fn test_remove_clue_invalid_hunt_status_not_draft() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+        env.mock_all_auths();
+        let creator = Address::generate(&env);
+        let title = String::from_str(&env, "Hunt");
+        let description = String::from_str(&env, "Desc");
+
+        let err = with_core_contract(&env, |env, _cid| {
+            let hid = HuntyCore::create_hunt(
+                env.clone(),
+                creator.clone(),
+                title,
+                description,
+                None,
+                None,
+            )
+            .unwrap();
+            let cid = HuntyCore::add_clue(
+                env.clone(),
+                hid,
+                String::from_str(env, "Q"),
+                String::from_str(env, "a"),
+                1,
+                true,
+            )
+            .unwrap();
+            HuntyCore::activate_hunt(env.clone(), hid, creator.clone()).unwrap();
+            HuntyCore::remove_clue(env.clone(), hid, cid, creator.clone()).unwrap_err()
+        });
+
+        assert_eq!(err, HuntErrorCode::InvalidHuntStatus);
+    }
+
+    #[test]
     fn test_add_clue_hunt_not_found() {
         let env = Env::default();
         env.ledger().set_timestamp(1_700_000_000);

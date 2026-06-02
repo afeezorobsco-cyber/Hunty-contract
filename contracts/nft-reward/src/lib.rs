@@ -238,6 +238,9 @@ impl NftReward {
         player_address: Address,
         metadata: Map<Symbol, Val>,
     ) -> u64 {
+        // Ensure only the configured RewardManager contract can call this function
+        let reward_mgr = Storage::get_reward_manager(&env).expect("RewardManager not set");
+        reward_mgr.require_auth();
         use soroban_sdk::TryFromVal;
 
         let title = metadata

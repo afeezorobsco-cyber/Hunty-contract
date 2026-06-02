@@ -17,6 +17,12 @@ pub struct NftMetadata {
     pub rarity: u32,
     /// Custom tier for special categories (0 = none).
     pub tier: u32,
+    /// Original creator of the NFT (stamped at mint time for provenance/attribution).
+    /// Essential for secondary market royalty distribution and creator attribution.
+    pub creator: Option<Address>,
+    /// Royalty in basis points (1 bp = 0.01%). For example, 250 = 2.5% royalty.
+    /// Used for secondary market sales to provide ongoing creator revenue.
+    pub royalty_bps: Option<u32>,
 }
 
 /// Complete metadata returned by get_nft_metadata (includes NftData-derived fields).
@@ -34,6 +40,8 @@ pub struct NftMetadataResponse {
     pub image_uri: String,
     pub rarity: u32,
     pub tier: u32,
+    pub creator: Option<Address>,
+    pub royalty_bps: Option<u32>,
 }
 
 /// NFT data structure stored on-chain.
@@ -142,6 +150,8 @@ impl NftReward {
     /// - "hunt_title": String (defaults to title when omitted/empty)
     /// - "rarity": u32
     /// - "tier": u32
+    /// - "creator": Address (defaults to player_address if omitted)
+    /// - "royalty_bps": u32 (optional, basis points for royalty percentage)
     pub fn mint_reward_nft_from_map(
         env: Env,
         hunt_id: u64,
@@ -180,6 +190,15 @@ impl NftReward {
             .and_then(|v| u32::try_from_val(&env, &v).ok())
             .unwrap_or(0u32);
 
+        let creator = metadata
+            .get(Symbol::new(&env, "creator"))
+            .and_then(|v| Address::try_from_val(&env, &v).ok())
+            .or_else(|| Some(player_address.clone()));
+
+        let royalty_bps = metadata
+            .get(Symbol::new(&env, "royalty_bps"))
+            .and_then(|v| u32::try_from_val(&env, &v).ok());
+
         let meta = NftMetadata {
             title,
             description,
@@ -187,6 +206,8 @@ impl NftReward {
             hunt_title,
             rarity,
             tier,
+            creator,
+            royalty_bps,
         };
 
         Self::mint_reward_nft(env, hunt_id, player_address, meta)
@@ -212,6 +233,8 @@ impl NftReward {
             image_uri: nft.metadata.image_uri.clone(),
             rarity: nft.metadata.rarity,
             tier: nft.metadata.tier,
+            creator: nft.metadata.creator.clone(),
+            royalty_bps: nft.metadata.royalty_bps,
         })
     }
 

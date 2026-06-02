@@ -702,16 +702,42 @@ mod test {
         env.ledger().set_timestamp(1_700_000_000);
         env.mock_all_auths();
         let creator = Address::generate(&env);
-        let title = String::from_str(&env, "Hunt");
-        let description = String::from_str(&env, "Desc");
 
         let list = with_core_contract(&env, |env, _cid| {
-            let hid = HuntyCore::create_hunt(env.clone(), creator, title, description, None, None)
-                .unwrap();
-            HuntyCore::list_clues(env.clone(), hid)
+            let seeded_hunt_id = HuntyCore::create_hunt(
+                env.clone(),
+                creator.clone(),
+                String::from_str(env, "Seeded Hunt"),
+                String::from_str(env, "Has a clue"),
+                None,
+                None,
+            )
+            .unwrap();
+            HuntyCore::add_clue(
+                env.clone(),
+                seeded_hunt_id,
+                String::from_str(env, "Q1"),
+                String::from_str(env, "a"),
+                1,
+                true,
+            )
+            .unwrap();
+
+            let empty_hunt_id = HuntyCore::create_hunt(
+                env.clone(),
+                creator,
+                String::from_str(env, "Empty Hunt"),
+                String::from_str(env, "No clues yet"),
+                None,
+                None,
+            )
+            .unwrap();
+
+            HuntyCore::list_clues(env.clone(), empty_hunt_id)
         });
 
-        assert_eq!(list.len(), 0);
+        let expected = Vec::new(&env);
+        assert_eq!(list, expected);
     }
 
     #[test]

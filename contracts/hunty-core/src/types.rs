@@ -289,6 +289,15 @@ pub struct ClueAddedEvent {
     pub is_required: bool,
 }
 
+/// Emitted when a clue is removed from a draft hunt.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ClueRemovedEvent {
+    pub hunt_id: u64,
+    pub clue_id: u32,
+    pub creator: Address,
+}
+
 /// Emitted when a player registers for an active hunt.
 #[contracttype]
 #[derive(Clone, Debug)]

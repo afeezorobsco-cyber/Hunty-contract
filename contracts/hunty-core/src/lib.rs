@@ -2,8 +2,8 @@
 use crate::errors::{HuntError, HuntErrorCode};
 use crate::storage::Storage;
 use crate::types::{
-    AnswerIncorrectEvent, Clue, ClueAddedEvent, ClueCompletedEvent, ClueInfo, Hunt,
-    HuntActivatedEvent, HuntCancelledEvent, HuntCompletedEvent, HuntCreatedEvent,
+    AnswerIncorrectEvent, Clue, ClueAddedEvent, ClueCompletedEvent, ClueInfo, ClueRemovedEvent,
+    Hunt, HuntActivatedEvent, HuntCancelledEvent, HuntCompletedEvent, HuntCreatedEvent,
     HuntDeactivatedEvent, HuntStatistics, HuntStatus, LeaderboardEntry, PlayerProgress,
     PlayerRegisteredEvent, RewardClaimedEvent, RewardConfig,
 };
@@ -189,6 +189,42 @@ impl HuntyCore {
         env.events()
             .publish((Symbol::new(&env, "ClueAdded"), hunt_id, clue_id), event);
         Ok(clue_id)
+    }
+
+    /// Removes a clue from a draft hunt. Only the hunt creator can remove clues.
+    pub fn remove_clue(
+        env: Env,
+        hunt_id: u64,
+        clue_id: u32,
+        caller: Address,
+    ) -> Result<(), HuntErrorCode> {
+        caller.require_auth();
+        let mut hunt = Storage::get_hunt_or_error(&env, hunt_id).map_err(HuntErrorCode::from)?;
+        if hunt.status != HuntStatus::Draft {
+            return Err(HuntErrorCode::InvalidHuntStatus);
+        }
+        if caller != hunt.creator {
+            return Err(HuntErrorCode::Unauthorized);
+        }
+
+        let clue =
+            Storage::get_clue_or_error(&env, hunt_id, clue_id).map_err(HuntErrorCode::from)?;
+        Storage::remove_clue(&env, hunt_id, clue_id);
+        hunt.total_clues = hunt.total_clues.saturating_sub(1);
+        if clue.is_required {
+            hunt.required_clues = hunt.required_clues.saturating_sub(1);
+        }
+        Storage::save_hunt(&env, &hunt);
+
+        let event = ClueRemovedEvent {
+            hunt_id,
+            clue_id,
+            creator: caller,
+        };
+        env.events()
+            .publish((Symbol::new(&env, "ClueRemoved"), hunt_id, clue_id), event);
+
+        Ok(())
     }
 
     /// Returns clue information for a hunt/clue. Does not expose the answer hash.

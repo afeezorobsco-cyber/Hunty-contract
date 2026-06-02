@@ -286,9 +286,9 @@ impl HuntyCore {
         })
     }
 
-    /// Returns all clues for a hunt (question, points, required). Answer hashes are not exposed.
-    pub fn list_clues(env: Env, hunt_id: u64) -> Vec<ClueInfo> {
-        let raw = Storage::list_clues_for_hunt(&env, hunt_id);
+    /// Returns clues for a hunt (question, points, required) with pagination. Answer hashes are not exposed.
+    pub fn list_clues(env: Env, hunt_id: u64, offset: u32, limit: u32) -> Vec<ClueInfo> {
+        let raw = Storage::list_clues_for_hunt(&env, hunt_id, offset, limit);
         let mut out = Vec::new(&env);
         for i in 0..raw.len() {
             let c = raw.get(i).unwrap();
@@ -974,8 +974,30 @@ impl HuntyCore {
     ///
     /// # Returns
     /// `true` if all required clues are completed, `false` otherwise
-    fn check_all_required_clues_completed(required_clue_count: u32, progress: &PlayerProgress) -> bool {
-        progress.required_completed_count >= required_clue_count
+    fn check_all_required_clues_completed(
+        env: &Env,
+        hunt_id: u64,
+        progress: &PlayerProgress,
+    ) -> bool {
+        // Get all clues for the hunt
+        let all_clues = Storage::list_clues_for_hunt(env, hunt_id, 0, MAX_CLUES_PER_HUNT);
+
+        // Iterate through all clues and check if all required ones are completed
+        for i in 0..all_clues.len() {
+            let clue = all_clues.get(i).unwrap();
+
+            // If this is a required clue
+            if clue.is_required {
+                // Check if player has completed it
+                if !progress.has_completed_clue(clue.clue_id) {
+                    // Found a required clue that's not completed
+                    return false;
+                }
+            }
+        }
+
+        // All required clues are completed
+        true
     }
 
     /// Returns player progress for a hunt (read-only).

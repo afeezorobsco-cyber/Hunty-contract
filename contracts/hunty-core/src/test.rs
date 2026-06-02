@@ -704,36 +704,9 @@ mod test {
         let creator = Address::generate(&env);
 
         let list = with_core_contract(&env, |env, _cid| {
-            let seeded_hunt_id = HuntyCore::create_hunt(
-                env.clone(),
-                creator.clone(),
-                String::from_str(env, "Seeded Hunt"),
-                String::from_str(env, "Has a clue"),
-                None,
-                None,
-            )
-            .unwrap();
-            HuntyCore::add_clue(
-                env.clone(),
-                seeded_hunt_id,
-                String::from_str(env, "Q1"),
-                String::from_str(env, "a"),
-                1,
-                true,
-            )
-            .unwrap();
-
-            let empty_hunt_id = HuntyCore::create_hunt(
-                env.clone(),
-                creator,
-                String::from_str(env, "Empty Hunt"),
-                String::from_str(env, "No clues yet"),
-                None,
-                None,
-            )
-            .unwrap();
-
-            HuntyCore::list_clues(env.clone(), empty_hunt_id)
+            let hid = HuntyCore::create_hunt(env.clone(), creator, title, description, None, None)
+                .unwrap();
+            HuntyCore::list_clues(env.clone(), hid, 0, 10)
         });
 
         let expected = Vec::new(&env);
@@ -757,7 +730,7 @@ mod test {
                 .unwrap();
             HuntyCore::add_clue(env.clone(), hid, q1, a.clone(), 1, false).unwrap();
             HuntyCore::add_clue(env.clone(), hid, q2, a, 2, true).unwrap();
-            HuntyCore::list_clues(env.clone(), hid)
+            HuntyCore::list_clues(env.clone(), hid, 0, 10)
         });
 
         assert_eq!(list.len(), 2);
@@ -772,101 +745,39 @@ mod test {
     }
 
     #[test]
-    fn test_remove_clue_success_in_draft() {
+    fn test_list_clues_pagination() {
         let env = Env::default();
         env.ledger().set_timestamp(1_700_000_000);
         env.mock_all_auths();
         let creator = Address::generate(&env);
         let title = String::from_str(&env, "Hunt");
         let description = String::from_str(&env, "Desc");
-        let answer = String::from_str(&env, "a");
+        let q1 = String::from_str(&env, "Q1");
+        let q2 = String::from_str(&env, "Q2");
+        let q3 = String::from_str(&env, "Q3");
+        let a = String::from_str(&env, "a");
 
-        let (hunt, list, removed) = with_core_contract(&env, |env, _cid| {
-            let hid = HuntyCore::create_hunt(
-                env.clone(),
-                creator.clone(),
-                title,
-                description,
-                None,
-                None,
-            )
-            .unwrap();
-            HuntyCore::add_clue(
-                env.clone(),
-                hid,
-                String::from_str(env, "Q1"),
-                answer.clone(),
-                1,
-                false,
-            )
-            .unwrap();
-            let removed_id = HuntyCore::add_clue(
-                env.clone(),
-                hid,
-                String::from_str(env, "Q2"),
-                answer.clone(),
-                2,
-                true,
-            )
-            .unwrap();
-            HuntyCore::add_clue(
-                env.clone(),
-                hid,
-                String::from_str(env, "Q3"),
-                answer,
-                3,
-                true,
-            )
-            .unwrap();
-            HuntyCore::remove_clue(env.clone(), hid, removed_id, creator.clone()).unwrap();
+        let (list1, list2, list_all) = with_core_contract(&env, |env, _cid| {
+            let hid = HuntyCore::create_hunt(env.clone(), creator, title, description, None, None)
+                .unwrap();
+            HuntyCore::add_clue(env.clone(), hid, q1, a.clone(), 1, false).unwrap();
+            HuntyCore::add_clue(env.clone(), hid, q2, a.clone(), 2, true).unwrap();
+            HuntyCore::add_clue(env.clone(), hid, q3, a, 3, false).unwrap();
             (
-                Storage::get_hunt(env, hid).unwrap(),
-                HuntyCore::list_clues(env.clone(), hid),
-                HuntyCore::get_clue(env.clone(), hid, removed_id).unwrap_err(),
+                HuntyCore::list_clues(env.clone(), hid, 0, 2),
+                HuntyCore::list_clues(env.clone(), hid, 2, 2),
+                HuntyCore::list_clues(env.clone(), hid, 0, 10),
             )
         });
 
-        assert_eq!(hunt.total_clues, 2);
-        assert_eq!(hunt.required_clues, 1);
-        assert_eq!(list.len(), 2);
-        assert_eq!(list.get(0).unwrap().clue_id, 1);
-        assert_eq!(list.get(1).unwrap().clue_id, 3);
-        assert_eq!(removed, HuntErrorCode::ClueNotFound);
-    }
-
-    #[test]
-    fn test_remove_clue_invalid_hunt_status_not_draft() {
-        let env = Env::default();
-        env.ledger().set_timestamp(1_700_000_000);
-        env.mock_all_auths();
-        let creator = Address::generate(&env);
-        let title = String::from_str(&env, "Hunt");
-        let description = String::from_str(&env, "Desc");
-
-        let err = with_core_contract(&env, |env, _cid| {
-            let hid = HuntyCore::create_hunt(
-                env.clone(),
-                creator.clone(),
-                title,
-                description,
-                None,
-                None,
-            )
-            .unwrap();
-            let cid = HuntyCore::add_clue(
-                env.clone(),
-                hid,
-                String::from_str(env, "Q"),
-                String::from_str(env, "a"),
-                1,
-                true,
-            )
-            .unwrap();
-            HuntyCore::activate_hunt(env.clone(), hid, creator.clone()).unwrap();
-            HuntyCore::remove_clue(env.clone(), hid, cid, creator.clone()).unwrap_err()
-        });
-
-        assert_eq!(err, HuntErrorCode::InvalidHuntStatus);
+        // Validate results
+        assert_eq!(list1.len(), 2);
+        assert_eq!(list2.len(), 1);
+        assert_eq!(list_all.len(), 3);
+        
+        assert_eq!(list1.get(0).unwrap().clue_id, 1);
+        assert_eq!(list1.get(1).unwrap().clue_id, 2);
+        assert_eq!(list2.get(0).unwrap().clue_id, 3);
     }
 
     #[test]

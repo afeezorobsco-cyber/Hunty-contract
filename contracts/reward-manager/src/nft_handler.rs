@@ -55,7 +55,10 @@ impl NftHandler {
         args.push_back(player.clone().into_val(env));
         args.push_back(metadata.into_val(env));
 
-        env.try_invoke_contract(
+        // Specify the concrete error type to avoid type inference ambiguity.
+        // The NFT contract returns a `u64` on success; map any invocation errors
+        // to `RewardErrorCode::NftMintFailed` for the caller.
+        env.try_invoke_contract::<u64, nft_reward::NftErrorCode>(
             nft_contract,
             &Symbol::new(env, "mint_reward_nft_from_map"),
             args,

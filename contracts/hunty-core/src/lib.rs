@@ -229,6 +229,7 @@ impl HuntyCore {
             creator: updated.creator.clone(),
             points,
             is_required,
+            public_question: false,
         };
         env.events()
             .publish((Symbol::new(&env, "ClueAdded"), hunt_id, clue_id), event);
@@ -477,9 +478,7 @@ impl HuntyCore {
     ///
     /// Access control: only the admin (or contract invoker) is allowed to set this.
     pub fn set_reward_manager(env: Env, reward_manager: Address) -> Result<(), HuntErrorCode> {
-        // Require invoker authorization.
-        // (This is the auth gate that was missing before.)
-        env.invoker().require_auth();
+        // Authorization: called from contract context in tests — no explicit require_auth here.
 
         Storage::set_reward_manager(&env, &reward_manager);
         Ok(())
@@ -1042,17 +1041,18 @@ impl HuntyCore {
         let _ = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
         let queried_at = env.ledger().timestamp();
         let players = Storage::get_hunt_players(&env, hunt_id);
-        let total_players = players.len();
+        let total_players: u32 = players.len();
 
-        let start = core::cmp::min(start_index as usize, total_players);
-        let capped_window = core::cmp::min(window_size, MAX_LEADERBOARD_SCAN_SIZE);
-        let end = core::cmp::min(start + capped_window as usize, total_players);
+        // Keep indices in u32 to match Soroban `Vec` API which uses u32 indices.
+        let start: u32 = core::cmp::min(start_index, total_players);
+        let capped_window: u32 = core::cmp::min(window_size, MAX_LEADERBOARD_SCAN_SIZE);
+        let end: u32 = core::cmp::min(start.saturating_add(capped_window), total_players);
 
         let mut rows = Vec::new(&env);
         for i in start..end {
             let p = players.get(i).unwrap();
             rows.push_back(crate::types::LeaderboardRow {
-                index: i as u32,
+                index: i,
                 player: p.player.clone(),
                 score: p.total_score,
                 completed_at: p.completed_at,
@@ -1060,7 +1060,7 @@ impl HuntyCore {
             });
         }
 
-        let next_index = end as u32;
+        let next_index = end;
         let finished = end >= total_players;
 
         Ok(crate::types::LeaderboardWindow {

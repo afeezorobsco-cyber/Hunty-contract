@@ -1,13 +1,15 @@
+extern crate hunty_core;
+
 #[cfg(test)]
 mod stress_tests {
-    use super::*;
-    use soroban_sdk::{testutils::Address as _, Env, String, Vec};
+    use hunty_core::{HuntyCore, HuntyCoreClient};
+    use soroban_sdk::{testutils::Register as _, Address, Env, String, Vec};
 
     #[test]
     fn test_max_clues_stress_and_gas() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, HuntyContract);
-        let client = HuntyContractClient::new(&env, &contract_id);
+        let contract_id = env.register(HuntyCore, ());
+        let client = HuntyCoreClient::new(&env, &contract_id);
 
         let admin = Address::generate(&env);
         let hunt_name = String::from_str(&env, "Ultimate Stress Hunt");
@@ -44,11 +46,11 @@ mod stress_tests {
         }
 
         // 4. Benchmark list_clues gas at capacity (100 clues)
-        env.budget().reset_default();
+        env.cost_estimate().budget().reset_default();
         
-        let start_instructions = env.budget().cpu_instructions().0;
+        let start_instructions = env.cost_estimate().budget().cpu_instruction_cost().0;
         let clue_list = client.list_clues(&hunt_name);
-        let end_instructions = env.budget().cpu_instructions().0;
+        let end_instructions = env.cost_estimate().budget().cpu_instruction_cost().0;
         
         let gas_used = end_instructions - start_instructions;
         
@@ -63,12 +65,6 @@ mod stress_tests {
         for i in 0..100 {
             assert_eq!(clue_list.get(i).unwrap(), clues.get(i).unwrap());
         }
-        
-        // Log gas (visible with --nocapture)
-        env.print(&format!(
-            "✅ Stress test passed. Gas (CPU instructions) to list 100 clues: {}",
-            gas_used
-        ));
         
         // Optional: Assert reasonable gas limit (adjust based on your contract)
         assert!(

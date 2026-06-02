@@ -2687,6 +2687,7 @@ mod test {
             nft.metadata.title,
             SorobanString::from_str(&env, "Integrated Hunt")
         );
+        assert_eq!(nft.metadata.description, SorobanString::from_str(&env, ""));
     }
 
     #[test]

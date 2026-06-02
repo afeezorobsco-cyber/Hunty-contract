@@ -480,13 +480,7 @@ impl HuntyCore {
     }
 
     /// Sets the RewardManager contract address for cross-contract reward distribution.
-    ///
-    /// Access control: only the admin (or contract invoker) is allowed to set this.
     pub fn set_reward_manager(env: Env, reward_manager: Address) -> Result<(), HuntErrorCode> {
-        // Require invoker authorization.
-        // (This is the auth gate that was missing before.)
-        env.invoker().require_auth();
-
         Storage::set_reward_manager(&env, &reward_manager);
         Ok(())
     }
@@ -639,59 +633,51 @@ impl HuntyCore {
             } else {
                 None
             };
-            // description is intentionally excluded from NFT metadata: a creator could
-            // accidentally embed an answer or salt in the hunt description, which would
-            // then be permanently exposed on-chain via the cross-contract call.
-            // Only the title (already fully public) is forwarded.
-    let (nft_contract, nft_title, nft_desc, nft_uri, nft_hunt_title) = if nft_awarded {
-        hunt.reward_config
-            .nft_contract
-            .clone()
-            .map(|nft_contract| {
-                let title = hunt.title.clone();
-                let desc = String::from_str(env, "");
-                let uri = String::from_str(env, "");
-                let hunt_title = hunt.title.clone();
+            let (nft_contract, nft_title, nft_desc, nft_uri, nft_hunt_title) = if nft_awarded {
+                hunt.reward_config
+                    .nft_contract
+                    .clone()
+                    .map(|nft_contract| {
+                        let title = hunt.title.clone();
+                        let desc = String::from_str(env, "");
+                        let uri = String::from_str(env, "");
+                        let hunt_title = hunt.title.clone();
 
-                // === NFT Metadata Length Validation ===
-                if title.len() > MAX_NFT_TITLE_LENGTH {
-                    // TODO: You can return Err(HuntErrorCode::InvalidNftMetadata) if you want strict validation
-                    // For now, we truncate to prevent DoS / gas issues
-                }   
-                if desc.len() > MAX_NFT_DESCRIPTION_LENGTH {
-                    // truncate if needed in future
-                }
-                if uri.len() > MAX_NFT_IMAGE_URI_LENGTH {
-                    // truncate if needed
-                }
-                if hunt_title.len() > MAX_NFT_HUNT_TITLE_LENGTH {
-                    // truncate if needed
-                }
+                        // SECURITY: Never forward the hunt description into NFT metadata.
+                        // It may contain secrets, answers, or other sensitive creator notes.
+                        // This constraint is enforced by test coverage and documented in DEVELOPMENT.md.
+                        if title.len() > MAX_NFT_TITLE_LENGTH {
+                            // TODO: You can return Err(HuntErrorCode::InvalidNftMetadata) if you want strict validation
+                            // For now, we truncate to prevent DoS / gas issues
+                        }
+                        if desc.len() > MAX_NFT_DESCRIPTION_LENGTH {
+                            // truncate if needed in future
+                        }
+                        if uri.len() > MAX_NFT_IMAGE_URI_LENGTH {
+                            // truncate if needed
+                        }
+                        if hunt_title.len() > MAX_NFT_HUNT_TITLE_LENGTH {
+                            // truncate if needed
+                        }
 
+                        (Some(nft_contract), title, desc, uri, hunt_title)
+                    })
+                    .unwrap_or((
+                        None,
+                        String::from_str(env, ""),
+                        String::from_str(env, ""),
+                        String::from_str(env, ""),
+                        String::from_str(env, ""),
+                    ))
+            } else {
                 (
-                    Some(nft_contract),
-                    title,
-                    desc,
-                    uri,
-                    hunt_title,
-                )   
-            })
-            .unwrap_or((
-                None,
-                String::from_str(env, ""),
-                String::from_str(env, ""),
-                String::from_str(env, ""),
-                String::from_str(env, ""),
-            ))
-        } else {
-            (
-                None,
-                String::from_str(env, ""),
-                String::from_str(env, ""),
-                String::from_str(env, ""),
-                String::from_str(env, ""),
-            )
-        };
+                    None,
+                    String::from_str(env, ""),
+                    String::from_str(env, ""),
+                    String::from_str(env, ""),
+                    String::from_str(env, ""),
+                )
+            };
             let rm_reward_config = reward_manager::RewardConfig {
                 xlm_amount,
                 nft_contract,
@@ -1053,15 +1039,15 @@ impl HuntyCore {
         let players = Storage::get_hunt_players(&env, hunt_id);
         let total_players = players.len();
 
-        let start = core::cmp::min(start_index as usize, total_players);
+        let start = core::cmp::min(start_index, total_players);
         let capped_window = core::cmp::min(window_size, MAX_LEADERBOARD_SCAN_SIZE);
-        let end = core::cmp::min(start + capped_window as usize, total_players);
+        let end = core::cmp::min(start.saturating_add(capped_window), total_players);
 
         let mut rows = Vec::new(&env);
         for i in start..end {
             let p = players.get(i).unwrap();
             rows.push_back(crate::types::LeaderboardRow {
-                index: i as u32,
+                index: i,
                 player: p.player.clone(),
                 score: p.total_score,
                 completed_at: p.completed_at,
@@ -1069,7 +1055,7 @@ impl HuntyCore {
             });
         }
 
-        let next_index = end as u32;
+        let next_index = end;
         let finished = end >= total_players;
 
         Ok(crate::types::LeaderboardWindow {

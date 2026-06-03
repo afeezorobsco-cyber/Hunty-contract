@@ -222,6 +222,9 @@ impl Storage {
             return;
         }
 
+        env.storage()
+            .persistent()
+            .set(&Self::player_entry_key(hunt_id, count), player);
         let entry_key = Self::player_entry_key(hunt_id, count);
         env.storage().persistent().set(&entry_key, player);
         env.storage().persistent().extend_ttl(
@@ -312,6 +315,7 @@ impl Storage {
     // ========== Reward Manager Storage Functions ==========
 
     pub fn set_reward_manager(env: &Env, address: &Address) {
+        env.storage().instance().set(&Self::REWARD_MGR_KEY, address);
         env.storage()
             .instance()
             .set(&Self::REWARD_MGR_KEY, address);

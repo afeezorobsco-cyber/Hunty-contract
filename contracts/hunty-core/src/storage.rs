@@ -32,7 +32,7 @@ impl Storage {
     /// Panics if storage operation fails
     pub fn save_hunt(env: &Env, hunt: &Hunt) {
         let key = Self::hunt_key(hunt.hunt_id);
-        env.storage().instance().set(&key, hunt);
+        env.storage().persistent().set(&key, hunt);
     }
 
     /// Retrieves a hunt by ID, returning an Option.
@@ -45,7 +45,7 @@ impl Storage {
     /// * `Some(Hunt)` if the hunt exists, `None` otherwise
     pub fn get_hunt(env: &Env, hunt_id: u64) -> Option<Hunt> {
         let key = Self::hunt_key(hunt_id);
-        env.storage().instance().get(&key)
+        env.storage().persistent().get(&key)
     }
 
     /// Retrieves a hunt by ID or returns an error if not found.
@@ -73,7 +73,7 @@ impl Storage {
     pub fn save_clue(env: &Env, hunt_id: u64, clue: &Clue) {
         // Store the clue with composite key
         let key = Self::clue_key(hunt_id, clue.clue_id);
-        env.storage().instance().set(&key, clue);
+        env.storage().persistent().set(&key, clue);
 
         // Update the list of clue IDs for this hunt
         Self::add_clue_to_list(env, hunt_id, clue.clue_id);
@@ -90,7 +90,7 @@ impl Storage {
     /// * `Some(Clue)` if the clue exists, `None` otherwise
     pub fn get_clue(env: &Env, hunt_id: u64, clue_id: u32) -> Option<Clue> {
         let key = Self::clue_key(hunt_id, clue_id);
-        env.storage().instance().get(&key)
+        env.storage().persistent().get(&key)
     }
 
     /// Retrieves a clue or returns an error if not found.
@@ -261,27 +261,27 @@ impl Storage {
     /// Each entry is stored at its own key so no single entry grows unboundedly.
     fn add_clue_to_list(env: &Env, hunt_id: u64, clue_id: u32) {
         let count_key = Self::clue_list_count_key(hunt_id);
-        let count: u32 = env.storage().instance().get(&count_key).unwrap_or(0);
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
 
         // O(1) existence check
         let exist_key = (symbol_short!("CLEX"), hunt_id, clue_id);
-        if env.storage().instance().has(&exist_key) {
+        if env.storage().persistent().has(&exist_key) {
             return;
         }
 
-        env.storage().instance().set(&Self::clue_entry_key(hunt_id, count), &clue_id);
-        env.storage().instance().set(&count_key, &(count + 1));
-        env.storage().instance().set(&exist_key, &());
+        env.storage().persistent().set(&Self::clue_entry_key(hunt_id, count), &clue_id);
+        env.storage().persistent().set(&count_key, &(count + 1));
+        env.storage().persistent().set(&exist_key, &());
     }
 
     /// Retrieves all clue IDs for a hunt by reading individual entries.
     fn get_clue_ids_for_hunt(env: &Env, hunt_id: u64) -> Vec<u32> {
         let count_key = Self::clue_list_count_key(hunt_id);
-        let count: u32 = env.storage().instance().get(&count_key).unwrap_or(0);
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
         let mut ids = Vec::new(env);
         for i in 0..count {
             let entry_key = Self::clue_entry_key(hunt_id, i);
-            if let Some(id) = env.storage().instance().get(&entry_key) {
+            if let Some(id) = env.storage().persistent().get(&entry_key) {
                 ids.push_back(id);
             }
         }
@@ -331,9 +331,9 @@ impl Storage {
     /// The next available hunt ID (starting from 1)
     pub fn next_hunt_id(env: &Env) -> u64 {
         let key = Self::HUNT_COUNTER_KEY;
-        let current: u64 = env.storage().instance().get(&key).unwrap_or(0);
+        let current: u64 = env.storage().persistent().get(&key).unwrap_or(0);
         let next = current + 1;
-        env.storage().instance().set(&key, &next);
+        env.storage().persistent().set(&key, &next);
         next
     }
 
@@ -346,7 +346,7 @@ impl Storage {
     /// The current hunt counter value (0 if no hunts have been created)
     pub fn get_hunt_counter(env: &Env) -> u64 {
         let key = Self::HUNT_COUNTER_KEY;
-        env.storage().instance().get(&key).unwrap_or(0)
+        env.storage().persistent().get(&key).unwrap_or(0)
     }
 
     // ========== Clue Counter (per hunt) Functions ==========
@@ -362,9 +362,9 @@ impl Storage {
     /// The next available clue ID for the hunt
     pub fn next_clue_id(env: &Env, hunt_id: u64) -> u32 {
         let key = Self::clue_counter_key(hunt_id);
-        let current: u32 = env.storage().instance().get(&key).unwrap_or(0);
+        let current: u32 = env.storage().persistent().get(&key).unwrap_or(0);
         let next = current + 1;
-        env.storage().instance().set(&key, &next);
+        env.storage().persistent().set(&key, &next);
         next
     }
 
@@ -378,7 +378,7 @@ impl Storage {
     /// The number of clues added so far for the hunt (0 if none)
     pub fn get_clue_counter(env: &Env, hunt_id: u64) -> u32 {
         let key = Self::clue_counter_key(hunt_id);
-        env.storage().instance().get(&key).unwrap_or(0)
+        env.storage().persistent().get(&key).unwrap_or(0)
     }
 
     // ========== Reward Manager Storage Functions ==========

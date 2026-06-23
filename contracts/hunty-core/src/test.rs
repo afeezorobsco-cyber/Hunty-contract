@@ -6,11 +6,11 @@ use std::string::ToString;
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{Address, Env, String, Vec};
+    use soroban_sdk::{Address, Env, String, Symbol, TryFromVal, Vec};
     // Bring Soroban testutils traits into scope (generate addresses, set ledger info, register contracts).
     use crate::errors::{HuntError, HuntErrorCode};
     use crate::storage::Storage;
-    use crate::types::HuntStatus;
+    use crate::types::{HuntStatus, HuntStatusChangedEvent};
     use crate::HuntyCore;
     use nft_reward::{NftMetadata, NftReward};
     use reward_manager::RewardManager;
@@ -21,6 +21,24 @@ mod test {
     fn with_core_contract<T>(env: &Env, f: impl FnOnce(&Env, &Address) -> T) -> T {
         let contract_id = env.register_contract(None, HuntyCore);
         env.as_contract(&contract_id, || f(env, &contract_id))
+    }
+
+    fn find_hunt_status_changed_event(env: &Env) -> Option<HuntStatusChangedEvent> {
+        let expected_topic = Symbol::new(env, "HuntStatusChanged").into_val(env);
+        let events = env.events().all();
+        let mut idx = 0;
+        while idx < events.len() {
+            let event = events.get(idx).unwrap();
+            let topics = &event.1;
+            if topics.len() > 0 {
+                let topic = topics.get(0).unwrap();
+                if *topic == expected_topic {
+                    return HuntStatusChangedEvent::try_from_val(env, &event.2).ok();
+                }
+            }
+            idx += 1;
+        }
+        None
     }
 
     /// Runs a closure in the given contract's context. Use when multiple invocations must share
@@ -1087,6 +1105,13 @@ mod test {
             let hunt = Storage::get_hunt(env, hunt_id).unwrap();
             assert_eq!(hunt.status, HuntStatus::Active);
             assert!(hunt.activated_at > 0);
+
+            let status_event = find_hunt_status_changed_event(&env)
+                .expect("expected HuntStatusChanged event after activation");
+            assert_eq!(status_event.hunt_id, hunt_id);
+            assert_eq!(status_event.old_status, HuntStatus::Draft);
+            assert_eq!(status_event.new_status, HuntStatus::Active);
+            assert_eq!(status_event.changed_at, hunt.activated_at);
         });
     }
 
@@ -1125,6 +1150,7 @@ mod test {
 
             let err = HuntyCore::activate_hunt(env.clone(), hunt_id, attacker.clone()).unwrap_err();
             assert_eq!(err, HuntErrorCode::Unauthorized);
+            assert!(find_hunt_status_changed_event(&env).is_none());
         });
     }
 
@@ -1219,6 +1245,13 @@ mod test {
 
             let hunt = Storage::get_hunt(env, hunt_id).unwrap();
             assert_eq!(hunt.status, HuntStatus::Draft);
+
+            let status_event = find_hunt_status_changed_event(&env)
+                .expect("expected HuntStatusChanged event after deactivation");
+            assert_eq!(status_event.hunt_id, hunt_id);
+            assert_eq!(status_event.old_status, HuntStatus::Active);
+            assert_eq!(status_event.new_status, HuntStatus::Draft);
+            assert!(status_event.changed_at > 0);
         });
     }
 
@@ -1302,6 +1335,13 @@ mod test {
 
             let hunt = Storage::get_hunt(env, hunt_id).unwrap();
             assert_eq!(hunt.status, HuntStatus::Cancelled);
+
+            let status_event = find_hunt_status_changed_event(&env)
+                .expect("expected HuntStatusChanged event after cancellation");
+            assert_eq!(status_event.hunt_id, hunt_id);
+            assert_eq!(status_event.old_status, HuntStatus::Active);
+            assert_eq!(status_event.new_status, HuntStatus::Cancelled);
+            assert!(status_event.changed_at > 0);
         });
     }
 

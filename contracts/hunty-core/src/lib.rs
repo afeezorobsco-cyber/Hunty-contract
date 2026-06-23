@@ -6,8 +6,8 @@ use crate::storage::Storage;
 use crate::types::{
     AnswerIncorrectEvent, Clue, ClueAddedEvent, ClueCompletedEvent, ClueInfo, ClueRemovedEvent,
     Hunt, HuntActivatedEvent, HuntCancelledEvent, HuntCompletedEvent, HuntCreatedEvent,
-    HuntDeactivatedEvent, HuntStatistics, HuntStatus, LeaderboardEntry, PlayerProgress,
-    PlayerRegisteredEvent, RewardClaimedEvent, RewardConfig,
+    HuntDeactivatedEvent, HuntStatusChangedEvent, HuntStatistics, HuntStatus, LeaderboardEntry,
+    PlayerProgress, PlayerRegisteredEvent, RewardClaimedEvent, RewardConfig,
 };
 use reward_manager::RewardErrorCode;
 use soroban_sdk::{
@@ -36,6 +36,23 @@ pub struct HuntyCore;
 
 #[contractimpl]
 impl HuntyCore {
+    fn emit_hunt_status_changed(
+        env: &Env,
+        hunt_id: u64,
+        old_status: HuntStatus,
+        new_status: HuntStatus,
+        changed_at: u64,
+    ) {
+        let status_event = HuntStatusChangedEvent {
+            hunt_id,
+            old_status,
+            new_status,
+            changed_at,
+        };
+        env.events()
+            .publish((Symbol::new(env, "HuntStatusChanged"), hunt_id), status_event);
+    }
+
     /// Creates a new scavenger hunt with the provided metadata.
     ///
     /// # Arguments
@@ -381,6 +398,16 @@ impl HuntyCore {
 
         env.events()
             .publish((Symbol::new(&env, "HuntActivated"), hunt_id), event);
+
+        // Emit HuntStatusChanged event
+        Self::emit_hunt_status_changed(
+            &env,
+            hunt_id,
+            HuntStatus::Draft,
+            HuntStatus::Active,
+            current_time,
+        );
+
         Ok(())
     }
 
@@ -409,12 +436,21 @@ impl HuntyCore {
         env.events()
             .publish((Symbol::new(&env, "HuntDeactivated"), hunt_id), event);
 
+        Self::emit_hunt_status_changed(
+            &env,
+            hunt_id,
+            HuntStatus::Active,
+            HuntStatus::Draft,
+            env.ledger().timestamp(),
+        );
+
         Ok(())
     }
 
     pub fn cancel_hunt(env: Env, hunt_id: u64, caller: Address) -> Result<(), HuntErrorCode> {
         // Load hunt
         let mut hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
+        let old_status = hunt.status;
 
         // Verify caller is creator
         if caller != hunt.creator {
@@ -470,6 +506,14 @@ impl HuntyCore {
 
         env.events()
             .publish((Symbol::new(&env, "HuntCancelled"), hunt_id), event);
+
+        Self::emit_hunt_status_changed(
+            &env,
+            hunt_id,
+            old_status,
+            HuntStatus::Cancelled,
+            env.ledger().timestamp(),
+        );
 
         Ok(())
     }
@@ -731,9 +775,13 @@ impl HuntyCore {
         // Mark hunt as completed if all reward slots are taken
         if hunt.reward_config.claimed_count >= hunt.reward_config.max_winners {
             hunt.status = HuntStatus::Completed;
-            
-            // Optionally, we could emit a HuntStatusChangedEvent or HuntEndedEvent here 
-            // if we want to notify clients that the hunt is completely finished.
+            Self::emit_hunt_status_changed(
+                env,
+                hunt_id,
+                HuntStatus::Active,
+                HuntStatus::Completed,
+                env.ledger().timestamp(),
+            );
         }
         
         Storage::save_hunt(env, &hunt);

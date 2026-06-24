@@ -124,7 +124,7 @@ impl RewardManager {
         
         // Emit the event
         env.events().publish(
-            symbol_short!("NFT_SET"),
+            (symbol_short!("NFT_SET"),),
             NftContractSetEvent {
                 old_contract,
                 new_contract: nft_contract,
@@ -685,7 +685,6 @@ impl RewardManager {
 
     /// Returns true if the given NftReward contract meets the minimum required version.
     pub fn check_nft_reward_compatibility(env: Env, nft_reward_address: Address) -> bool {
-        use soroban_sdk::IntoVal;
         let ver: u32 = env.invoke_contract(
             &nft_reward_address,
             &soroban_sdk::Symbol::new(&env, "contract_version"),

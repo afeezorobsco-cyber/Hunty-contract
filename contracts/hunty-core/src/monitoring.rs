@@ -42,6 +42,7 @@ impl Monitoring {
         }
     }
 
+    #[allow(dead_code)]
     pub fn record_large_withdrawal(env: &Env, amount: i128) {
         if amount > 1_000_000_000 {
             Self::raise_alert(env, "large_withdrawal");

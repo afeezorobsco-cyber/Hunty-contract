@@ -39,14 +39,17 @@ impl Storage {
         env.storage().persistent().remove(&key);
     }
 
+    #[allow(dead_code)]
     pub fn save_admin(env: &Env, admin: &Address) {
         env.storage().instance().set(&Self::ADMIN_KEY, admin);
     }
 
+    #[allow(dead_code)]
     pub fn get_admin(env: &Env) -> Option<Address> {
         env.storage().instance().get(&Self::ADMIN_KEY)
     }
 
+    #[allow(dead_code)]
     pub fn set_reward_manager(env: &Env, address: &Address) {
         env.storage().instance().set(&Self::REWARD_MGR_KEY, address);
     }
@@ -55,16 +58,21 @@ impl Storage {
         env.storage().instance().get(&Self::REWARD_MGR_KEY)
     }
 
+    // --- Minter whitelist (reserved for admin-gated minting) ---
+
+    #[allow(dead_code)]
     pub fn add_minter(env: &Env, minter: &Address) {
         let key = Self::minter_key(minter);
         env.storage().persistent().set(&key, &true);
     }
 
+    #[allow(dead_code)]
     pub fn remove_minter(env: &Env, minter: &Address) {
         let key = Self::minter_key(minter);
         env.storage().persistent().remove(&key);
     }
 
+    #[allow(dead_code)]
     pub fn is_minter(env: &Env, minter: &Address) -> bool {
         let key = Self::minter_key(minter);
         env.storage().persistent().get(&key).unwrap_or(false)

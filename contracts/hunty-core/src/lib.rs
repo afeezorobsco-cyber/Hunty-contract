@@ -237,10 +237,9 @@ impl HuntyCore {
         if start >= end {
             return Err(HuntError::InvalidAnswer);
         }
-        for i in start..end {
-            let b = buf[i];
-            if b >= b'A' && b <= b'Z' {
-                buf[i] = b + (b'a' - b'A');
+        for b in &mut buf[start..end] {
+            if b.is_ascii_uppercase() {
+                *b += b'a' - b'A';
             }
         }
         let normalized = Bytes::from_slice(env, &buf[start..end]);
@@ -250,7 +249,7 @@ impl HuntyCore {
 
     #[inline]
     fn is_ascii_space(b: u8) -> bool {
-        b == 0x20 || b == 0x09 || b == 0x0a || b == 0x0d
+        b.is_ascii_whitespace()
     }
 
     pub fn activate_hunt(env: Env, hunt_id: u64, caller: Address) -> Result<(), HuntErrorCode> {
@@ -789,10 +788,9 @@ impl HuntyCore {
         let n = entries.len();
         let mut best_idx: Option<u32> = None;
         for i in 0..n {
-            let i_u32 = i as u32;
             let mut taken = false;
             for j in 0..selected.len() {
-                if selected.get(j).unwrap() == i_u32 {
+                if selected.get(j).unwrap() == i {
                     taken = true;
                     break;
                 }
@@ -825,7 +823,7 @@ impl HuntyCore {
                 }
             };
             if better {
-                best_idx = Some(i_u32);
+                best_idx = Some(i);
             }
         }
         best_idx
@@ -839,7 +837,7 @@ impl HuntyCore {
     ) -> Result<HuntStatistics, HuntErrorCode> {
         let _ = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
         let players = Storage::get_hunt_players(&env, hunt_id);
-        let total_players = players.len() as u32;
+        let total_players = players.len();
         let mut completed_count: u32 = 0;
         let mut total_score_sum: u64 = 0;
         for i in 0..players.len() {
@@ -855,7 +853,7 @@ impl HuntyCore {
             0
         };
         let average_score = if total_players > 0 {
-            (total_score_sum / (total_players as u64)) as u32
+            (total_score_sum / u64::from(total_players)) as u32
         } else {
             0
         };

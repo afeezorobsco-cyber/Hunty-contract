@@ -76,21 +76,11 @@ pub struct HuntActivatedEvent {
 }
 
 #[contracttype]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Location {
     pub latitude: i64,  // Degrees * 1_000_000
     pub longitude: i64, // Degrees * 1_000_000
     pub radius: u32,
-}
-
-impl Default for Location {
-    fn default() -> Self {
-        Self {
-            latitude: 0,
-            longitude: 0,
-            radius: 0,
-        }
-    }
 }
 
 #[contracttype]

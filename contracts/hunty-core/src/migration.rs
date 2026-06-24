@@ -1,6 +1,5 @@
 use crate::storage::Storage;
-use crate::types::Hunt;
-use hunty_migration::{MigrationFramework, CURRENT_SCHEMA_VERSION};
+use hunty_migration::MigrationFramework;
 use soroban_sdk::{Address, Env};
 
 pub use hunty_migration::MigrationReport;

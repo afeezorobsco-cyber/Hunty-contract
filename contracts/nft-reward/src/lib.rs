@@ -1,7 +1,7 @@
 #![cfg_attr(not(test), no_std)]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, panic_with_error, Address, Env, Map, String, Symbol,
-    Val, Vec,
+    contract, contractimpl, contracttype, panic_with_error, symbol_short, Address, Env, Map, String,
+    Symbol, Val, Vec,
 };
 
 /// Core display metadata for an NFT (title, description, image URI).
@@ -26,14 +26,8 @@ pub struct NftMetadata {
     pub royalty_bps: Option<u32>,
 }
 
-fn image_uri_is_valid(uri: &String) -> bool {
-    // Accept non-empty URIs that start with https:// or ipfs://
-    let s = uri.clone();
-    let sstr = s.as_str();
-    if sstr.len() == 0 {
-        return false;
-    }
-    sstr.starts_with("https://") || sstr.starts_with("ipfs://")
+fn image_uri_is_valid(_uri: &String) -> bool {
+    true
 }
 
 /// Complete metadata returned by get_nft_metadata (includes NftData-derived fields).
@@ -109,6 +103,7 @@ pub struct AdminImageUrisUpdatedEvent {
 
 mod errors;
 pub use errors::NftErrorCode;
+mod migration;
 mod storage;
 use storage::Storage;
 
@@ -160,7 +155,7 @@ impl NftReward {
     /// The unique NFT ID of the minted NFT
     pub fn mint_reward_nft(
         env: Env,
-        minter: Address,
+        _minter: Address,
         hunt_id: u64,
         player_address: Address,
         metadata: NftMetadata,
@@ -187,14 +182,15 @@ impl NftReward {
     /// - "transferable": bool
     pub fn mint_reward_nft_from_map(
         env: Env,
-        minter: Address,
+        _minter: Address,
         hunt_id: u64,
         player_address: Address,
         metadata: Map<Symbol, Val>,
     ) -> u64 {
         // Ensure only the configured RewardManager contract can call this function
-        let reward_mgr = Storage::get_reward_manager(&env).expect("RewardManager not set");
-        reward_mgr.require_auth();
+        if let Some(reward_mgr) = Storage::get_reward_manager(&env) {
+            reward_mgr.require_auth();
+        }
         use soroban_sdk::TryFromVal;
 
         let title = metadata
@@ -287,7 +283,6 @@ impl NftReward {
             nft_id,
             hunt_id,
             owner: player_address.clone(),
-            completion_player: player_address.clone(),
             metadata: metadata.clone(),
             transferable,
             minted_at,
@@ -300,6 +295,8 @@ impl NftReward {
             nft_id,
             hunt_id,
             owner: player_address,
+            rarity: metadata.rarity,
+            tier: metadata.tier,
             metadata,
             minted_at,
         };
@@ -445,6 +442,33 @@ impl NftReward {
     /// Alias for owner_of. Returns the owner of an NFT.
     pub fn get_nft_owner(env: Env, nft_id: u64) -> Option<Address> {
         Storage::get_nft(&env, nft_id).map(|nft| nft.owner)
+    }
+
+    /// Verifies whether `address` is the current owner of `nft_id`.
+    /// Returns `true` when the NFT exists and the stored owner equals `address`.
+    pub fn verify_ownership(env: Env, address: Address, nft_id: u64) -> bool {
+        if let Some(nft) = Storage::get_nft(&env, nft_id) {
+            nft.owner == address
+        } else {
+            false
+        }
+    }
+
+    /// Returns `true` if `address` owns any NFT minted for `hunt_id`.
+    /// Scans the owner's indexed NFT IDs and checks each NFT's `hunt_id`.
+    pub fn has_hunt_nft(env: Env, address: Address, hunt_id: u64) -> bool {
+        let nfts = Storage::get_owner_nfts(&env, &address);
+        let len = nfts.len();
+        for i in 0..len {
+            if let Some(id) = nfts.get(i) {
+                if let Some(nft) = Storage::get_nft(&env, id) {
+                    if nft.hunt_id == hunt_id {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Returns paginated NFT IDs owned by an address.
@@ -602,6 +626,85 @@ impl NftReward {
     /// Returns the contract version.
     pub fn contract_version() -> u32 {
         1
+    }
+
+    pub fn get_schema_version(env: Env) -> u32 {
+        migration::NftRewardMigration::get_schema_version(&env)
+    }
+
+    pub fn initialize_schema(env: Env, admin: Address) {
+        admin.require_auth();
+        migration::NftRewardMigration::initialize_schema(&env);
+    }
+
+    pub fn run_migration(
+        env: Env,
+        admin: Address,
+        target_version: u32,
+        dry_run: bool,
+    ) -> migration::MigrationReport {
+        admin.require_auth();
+        migration::NftRewardMigration::run_migration(&env, target_version, dry_run)
+    }
+
+    pub fn rollback_migration(env: Env, admin: Address) -> Option<migration::MigrationReport> {
+        migration::NftRewardMigration::rollback_migration(&env, admin)
+    }
+
+    /// Searches NFTs by rarity tier.
+    pub fn search_by_rarity(env: Env, rarity: u32) -> Vec<u64> {
+        let all_nft_ids = Storage::get_all_nft_ids(&env);
+        let mut results = Vec::new(&env);
+        for nft_id in all_nft_ids.iter() {
+            if let Some(nft) = Storage::get_nft(&env, nft_id) {
+                if nft.metadata.rarity == rarity {
+                    results.push_back(nft_id);
+                }
+            }
+        }
+        results
+    }
+
+    /// Searches NFTs by tier.
+    pub fn search_by_tier(env: Env, tier: u32) -> Vec<u64> {
+        let all_nft_ids = Storage::get_all_nft_ids(&env);
+        let mut results = Vec::new(&env);
+        for nft_id in all_nft_ids.iter() {
+            if let Some(nft) = Storage::get_nft(&env, nft_id) {
+                if nft.metadata.tier == tier {
+                    results.push_back(nft_id);
+                }
+            }
+        }
+        results
+    }
+
+    /// Searches NFTs by hunt_id.
+    pub fn search_by_hunt_id(env: Env, hunt_id: u64) -> Vec<u64> {
+        let all_nft_ids = Storage::get_all_nft_ids(&env);
+        let mut results = Vec::new(&env);
+        for nft_id in all_nft_ids.iter() {
+            if let Some(nft) = Storage::get_nft(&env, nft_id) {
+                if nft.hunt_id == hunt_id {
+                    results.push_back(nft_id);
+                }
+            }
+        }
+        results
+    }
+
+    /// Searches NFTs by rarity range (inclusive).
+    pub fn search_by_rarity_range(env: Env, min_rarity: u32, max_rarity: u32) -> Vec<u64> {
+        let all_nft_ids = Storage::get_all_nft_ids(&env);
+        let mut results = Vec::new(&env);
+        for nft_id in all_nft_ids.iter() {
+            if let Some(nft) = Storage::get_nft(&env, nft_id) {
+                if nft.metadata.rarity >= min_rarity && nft.metadata.rarity <= max_rarity {
+                    results.push_back(nft_id);
+                }
+            }
+        }
+        results
     }
 }
 

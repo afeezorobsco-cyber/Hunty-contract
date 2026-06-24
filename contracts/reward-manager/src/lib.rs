@@ -52,6 +52,18 @@ pub struct AdminWithdrawEvent {
     pub amount: i128,
 }
 
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ContractAuthorizedEvent {
+    pub contract_address: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ContractRevokedEvent {
+    pub contract_address: Address,
+}
+
 #[contractimpl]
 impl RewardManager {
     /// Initializes the RewardManager with the XLM token contract address (SAC).
@@ -64,6 +76,69 @@ impl RewardManager {
         admin.require_auth();
         Storage::set_admin(&env, &admin);
         Storage::set_xlm_token(&env, &xlm_token);
+        Ok(())
+    }
+
+    /// Authorizes a contract to invoke privileged actions. Admin only.
+    pub fn authorize_contract(
+        env: Env,
+        admin: Address,
+        contract_address: Address,
+    ) -> Result<(), RewardErrorCode> {
+        admin.require_auth();
+        let stored = Storage::get_admin(&env).ok_or(RewardErrorCode::NotInitialized)?;
+        if admin != stored {
+            return Err(RewardErrorCode::Unauthorized);
+        }
+        Storage::authorize_contract(&env, &contract_address);
+        env.events().publish(
+            (Symbol::new(&env, "ContractAuthorized"), contract_address.clone()),
+            ContractAuthorizedEvent { contract_address },
+        );
+        Ok(())
+    }
+
+    /// Revokes a contract's authorization. Admin only.
+    pub fn revoke_contract(
+        env: Env,
+        admin: Address,
+        contract_address: Address,
+    ) -> Result<(), RewardErrorCode> {
+        admin.require_auth();
+        let stored = Storage::get_admin(&env).ok_or(RewardErrorCode::NotInitialized)?;
+        if admin != stored {
+            return Err(RewardErrorCode::Unauthorized);
+        }
+        Storage::revoke_contract(&env, &contract_address);
+        env.events().publish(
+            (Symbol::new(&env, "ContractRevoked"), contract_address.clone()),
+            ContractRevokedEvent { contract_address },
+        );
+        Ok(())
+    }
+
+    /// Updates an authorized contract address. Admin only.
+    pub fn update_authorized_contract(
+        env: Env,
+        admin: Address,
+        old_address: Address,
+        new_address: Address,
+    ) -> Result<(), RewardErrorCode> {
+        admin.require_auth();
+        let stored = Storage::get_admin(&env).ok_or(RewardErrorCode::NotInitialized)?;
+        if admin != stored {
+            return Err(RewardErrorCode::Unauthorized);
+        }
+        Storage::revoke_contract(&env, &old_address);
+        env.events().publish(
+            (Symbol::new(&env, "ContractRevoked"), old_address.clone()),
+            ContractRevokedEvent { contract_address: old_address },
+        );
+        Storage::authorize_contract(&env, &new_address);
+        env.events().publish(
+            (Symbol::new(&env, "ContractAuthorized"), new_address.clone()),
+            ContractAuthorizedEvent { contract_address: new_address },
+        );
         Ok(())
     }
 
@@ -375,6 +450,12 @@ impl RewardManager {
         player_address: Address,
         reward_config: RewardConfig,
     ) -> Result<(), RewardErrorCode> {
+        // Authorization check for invoking contract
+        let invoker = env.invoking_contract().ok_or(RewardErrorCode::UnauthorizedCaller)?;
+        if !Storage::is_contract_authorized(&env, &invoker) {
+            return Err(RewardErrorCode::UnauthorizedCaller);
+        }
+
         // Validate configuration
         if !reward_config.is_valid() {
             return Err(RewardErrorCode::InvalidConfig);

@@ -15,6 +15,8 @@ impl Storage {
     const POOL_DEP_KEY: soroban_sdk::Symbol = symbol_short!("PDEP");
     const POOL_DST_KEY: soroban_sdk::Symbol = symbol_short!("PDST");
     const HUNTY_CORE_KEY: soroban_sdk::Symbol = symbol_short!("HCORE");
+    const TOTAL_XLM_DST_KEY: soroban_sdk::Symbol = symbol_short!("TXLMDST");
+    const AUTH_CONTRACT_KEY: soroban_sdk::Symbol = symbol_short!("AUTHC");
 
     // ========== XLM Token Address ==========
 
@@ -151,6 +153,27 @@ impl Storage {
 
     pub fn get_total_xlm_distributed(env: &Env) -> i128 {
         env.storage().persistent().get(&Self::TOTAL_XLM_DST_KEY).unwrap_or(0)
+    }
+
+    // ========== Authorized Contracts Whitelist ==========
+
+    fn auth_contract_key(contract: &Address) -> (soroban_sdk::Symbol, Address) {
+        (Self::AUTH_CONTRACT_KEY, contract.clone())
+    }
+
+    pub fn authorize_contract(env: &Env, contract: &Address) {
+        let key = Self::auth_contract_key(contract);
+        env.storage().persistent().set(&key, &true);
+    }
+
+    pub fn revoke_contract(env: &Env, contract: &Address) {
+        let key = Self::auth_contract_key(contract);
+        env.storage().persistent().remove(&key);
+    }
+
+    pub fn is_contract_authorized(env: &Env, contract: &Address) -> bool {
+        let key = Self::auth_contract_key(contract);
+        env.storage().persistent().get(&key).unwrap_or(false)
     }
 
     // ========== Key Helpers ==========

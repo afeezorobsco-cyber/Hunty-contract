@@ -97,6 +97,18 @@ pub struct NftMetadataUpdatedEvent {
     pub updater: Address,
 }
 
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ContractAuthorizedEvent {
+    pub contract_address: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ContractRevokedEvent {
+    pub contract_address: Address,
+}
+
 mod errors;
 pub use errors::NftErrorCode;
 mod storage;
@@ -107,14 +119,120 @@ pub struct NftReward;
 
 #[contractimpl]
 impl NftReward {
-    /// Initializes the NFT reward contract with an optional max supply cap.
-    /// Call this once if you want to enforce a finite NFT supply.
-    pub fn initialize(env: Env, max_supply: Option<u64>) -> Result<(), crate::errors::NftErrorCode> {
+    /// One-time setup: stores the admin, registers the first authorized minter, and
+    /// optionally caps total supply. Must be called before minting on an initialized
+    /// contract; subsequent calls are rejected with `AlreadyInitialized`.
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        authorized_minter: Address,
+        max_supply: Option<u64>,
+    ) -> Result<(), crate::errors::NftErrorCode> {
         if Storage::is_initialized(&env) {
             return Err(crate::errors::NftErrorCode::AlreadyInitialized);
         }
-
+        admin.require_auth();
+        Storage::save_admin(&env, &admin);
+        Storage::add_minter(&env, &authorized_minter);
         Storage::set_max_supply(&env, max_supply);
+        Ok(())
+    }
+
+    /// Returns the stored admin address, or `None` if the contract is not yet initialized.
+    pub fn get_admin(env: Env) -> Option<Address> {
+        Storage::get_admin(&env)
+    }
+
+    /// Adds a new address to the minter whitelist. Admin only.
+    pub fn add_minter(
+        env: Env,
+        admin: Address,
+        new_minter: Address,
+    ) -> Result<(), crate::errors::NftErrorCode> {
+        admin.require_auth();
+        let stored = Storage::get_admin(&env).ok_or(crate::errors::NftErrorCode::Unauthorized)?;
+        if admin != stored {
+            return Err(crate::errors::NftErrorCode::Unauthorized);
+        }
+        Storage::add_minter(&env, &new_minter);
+        Ok(())
+    }
+
+    /// Removes an address from the minter whitelist. Admin only.
+    pub fn remove_minter(
+        env: Env,
+        admin: Address,
+        minter: Address,
+    ) -> Result<(), crate::errors::NftErrorCode> {
+        admin.require_auth();
+        let stored = Storage::get_admin(&env).ok_or(crate::errors::NftErrorCode::Unauthorized)?;
+        if admin != stored {
+            return Err(crate::errors::NftErrorCode::Unauthorized);
+        }
+        Storage::remove_minter(&env, &minter);
+        Ok(())
+    }
+
+    /// Authorizes a contract to invoke privileged actions. Admin only.
+    pub fn authorize_contract(
+        env: Env,
+        admin: Address,
+        contract_address: Address,
+    ) -> Result<(), crate::errors::NftErrorCode> {
+        admin.require_auth();
+        let stored = Storage::get_admin(&env).ok_or(crate::errors::NftErrorCode::Unauthorized)?;
+        if admin != stored {
+            return Err(crate::errors::NftErrorCode::Unauthorized);
+        }
+        Storage::authorize_contract(&env, &contract_address);
+        env.events().publish(
+            (Symbol::new(&env, "ContractAuthorized"), contract_address.clone()),
+            ContractAuthorizedEvent { contract_address },
+        );
+        Ok(())
+    }
+
+    /// Revokes a contract's authorization. Admin only.
+    pub fn revoke_contract(
+        env: Env,
+        admin: Address,
+        contract_address: Address,
+    ) -> Result<(), crate::errors::NftErrorCode> {
+        admin.require_auth();
+        let stored = Storage::get_admin(&env).ok_or(crate::errors::NftErrorCode::Unauthorized)?;
+        if admin != stored {
+            return Err(crate::errors::NftErrorCode::Unauthorized);
+        }
+        Storage::revoke_contract(&env, &contract_address);
+        env.events().publish(
+            (Symbol::new(&env, "ContractRevoked"), contract_address.clone()),
+            ContractRevokedEvent { contract_address },
+        );
+        Ok(())
+    }
+
+    /// Updates an authorized contract address. Admin only.
+    pub fn update_authorized_contract(
+        env: Env,
+        admin: Address,
+        old_address: Address,
+        new_address: Address,
+    ) -> Result<(), crate::errors::NftErrorCode> {
+        admin.require_auth();
+        let stored = Storage::get_admin(&env).ok_or(crate::errors::NftErrorCode::Unauthorized)?;
+        if admin != stored {
+            return Err(crate::errors::NftErrorCode::Unauthorized);
+        }
+        Storage::revoke_contract(&env, &old_address);
+        env.events().publish(
+            (Symbol::new(&env, "ContractRevoked"), old_address.clone()),
+            ContractRevokedEvent { contract_address: old_address },
+        );
+        Storage::authorize_contract(&env, &new_address);
+        env.events().publish(
+            (Symbol::new(&env, "ContractAuthorized"), new_address.clone()),
+            ContractAuthorizedEvent { contract_address: new_address },
+        );
         Ok(())
     }
 
@@ -139,6 +257,15 @@ impl NftReward {
         player_address: Address,
         metadata: NftMetadata,
     ) -> u64 {
+        if Storage::is_initialized(&env) {
+            minter.require_auth();
+            if !Storage::is_contract_authorized(&env, &minter) {
+                panic_with_error!(&env, crate::errors::NftErrorCode::UnauthorizedCaller);
+            }
+            if !Storage::is_minter(&env, &minter) {
+                panic_with_error!(&env, crate::errors::NftErrorCode::Unauthorized);
+            }
+        }
         Self::mint_reward_nft_impl(env, hunt_id, player_address, metadata, false)
     }
 
@@ -166,9 +293,15 @@ impl NftReward {
         player_address: Address,
         metadata: Map<Symbol, Val>,
     ) -> u64 {
-        // Ensure only the configured RewardManager contract can call this function
-        let reward_mgr = Storage::get_reward_manager(&env).expect("RewardManager not set");
-        reward_mgr.require_auth();
+        if Storage::is_initialized(&env) {
+            minter.require_auth();
+            if !Storage::is_contract_authorized(&env, &minter) {
+                panic_with_error!(&env, crate::errors::NftErrorCode::UnauthorizedCaller);
+            }
+            if !Storage::is_minter(&env, &minter) {
+                panic_with_error!(&env, crate::errors::NftErrorCode::Unauthorized);
+            }
+        }
         use soroban_sdk::TryFromVal;
 
         let title = metadata

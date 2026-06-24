@@ -10,6 +10,9 @@ impl Storage {
     const OWNER_NFT_COUNT_KEY: soroban_sdk::Symbol = symbol_short!("ONFC");
     const MAX_SUPPLY_KEY: soroban_sdk::Symbol = symbol_short!("MAXS");
     const INITIALIZED_KEY: soroban_sdk::Symbol = symbol_short!("INIT");
+    const ADMIN_KEY: soroban_sdk::Symbol = symbol_short!("ADMIN");
+    const MINTER_KEY: soroban_sdk::Symbol = symbol_short!("MINTR");
+    const AUTH_CONTRACT_KEY: soroban_sdk::Symbol = symbol_short!("AUTHC");
 
     fn nft_key(nft_id: u64) -> (soroban_sdk::Symbol, u64) {
         (Self::NFT_KEY, nft_id)
@@ -81,6 +84,27 @@ impl Storage {
 
     pub fn is_minter(env: &Env, minter: &Address) -> bool {
         let key = Self::minter_key(minter);
+        env.storage().persistent().get(&key).unwrap_or(false)
+    }
+
+    // --- Authorized contracts list ---
+
+    fn auth_contract_key(contract: &Address) -> (soroban_sdk::Symbol, Address) {
+        (Self::AUTH_CONTRACT_KEY, contract.clone())
+    }
+
+    pub fn authorize_contract(env: &Env, contract: &Address) {
+        let key = Self::auth_contract_key(contract);
+        env.storage().persistent().set(&key, &true);
+    }
+
+    pub fn revoke_contract(env: &Env, contract: &Address) {
+        let key = Self::auth_contract_key(contract);
+        env.storage().persistent().remove(&key);
+    }
+
+    pub fn is_contract_authorized(env: &Env, contract: &Address) -> bool {
+        let key = Self::auth_contract_key(contract);
         env.storage().persistent().get(&key).unwrap_or(false)
     }
 

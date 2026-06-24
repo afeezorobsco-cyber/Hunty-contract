@@ -1305,11 +1305,147 @@ mod test {
                 admin.clone(),
                 1,
                 recipient.clone(),
+                0,
             );
             assert_eq!(result, Err(RewardErrorCode::InvalidAmount));
         });
 
         // Recipient received nothing
         assert_eq!(get_balance(&env, &token_address, &recipient), 0);
+    }
+
+    // ========== Whitelisted/Authorized Contract Validation Tests ==========
+
+    use crate::RewardManagerClient;
+
+    #[soroban_sdk::contract]
+    pub struct CallerContract;
+
+    #[soroban_sdk::contractimpl]
+    impl CallerContract {
+        pub fn call_distribute(
+            env: Env,
+            reward_manager: Address,
+            hunt_id: u64,
+            player: Address,
+            config: RewardConfig,
+        ) -> Result<(), RewardErrorCode> {
+            let client = RewardManagerClient::new(&env, &reward_manager);
+            client.distribute_rewards(&hunt_id, &player, &config)
+        }
+    }
+
+    #[test]
+    fn test_authorize_contract_allows_distribution() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, token_address, _) = setup(&env);
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let player = Address::generate(&env);
+
+        // Deploy and fund
+        env.as_contract(&contract_id, || {
+            RewardManager::initialize(env.clone(), admin.clone(), token_address.clone()).unwrap();
+            RewardManager::create_reward_pool(env.clone(), creator.clone(), 1, 0).unwrap();
+        });
+
+        mint_tokens(&env, &token_address, &admin, &contract_id, 1000);
+        env.as_contract(&contract_id, || {
+            Storage::set_pool_balance(&env, 1, 1000);
+        });
+
+        // Register CallerContract
+        let caller_id = env.register(CallerContract, ());
+        let caller_client = CallerContractClient::new(&env, &caller_id);
+
+        let config = xlm_only_config(&env, 500);
+
+        // Before whitelisting, CallerContract calling should fail
+        let res = caller_client.try_call_distribute(&contract_id, &1, &player, &config);
+        assert!(res.is_err());
+
+        // Whitelist the CallerContract
+        env.as_contract(&contract_id, || {
+            RewardManager::authorize_contract(env.clone(), admin.clone(), caller_id.clone()).unwrap();
+        });
+
+        // After whitelisting, CallerContract calling should succeed
+        let res_ok = caller_client.call_distribute(&contract_id, &1, &player, &config);
+        assert!(res_ok.is_ok());
+
+        // Revoke CallerContract
+        env.as_contract(&contract_id, || {
+            RewardManager::revoke_contract(env.clone(), admin.clone(), caller_id.clone()).unwrap();
+        });
+
+        // After revoking, it should fail again
+        let res_revoked = caller_client.try_call_distribute(&contract_id, &1, &player, &config);
+        assert!(res_revoked.is_err());
+    }
+
+    #[test]
+    fn test_update_authorized_contract_updates_properly() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, token_address, _) = setup(&env);
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let player = Address::generate(&env);
+
+        // Deploy and fund
+        env.as_contract(&contract_id, || {
+            RewardManager::initialize(env.clone(), admin.clone(), token_address.clone()).unwrap();
+            RewardManager::create_reward_pool(env.clone(), creator.clone(), 1, 0).unwrap();
+        });
+
+        mint_tokens(&env, &token_address, &admin, &contract_id, 1000);
+        env.as_contract(&contract_id, || {
+            Storage::set_pool_balance(&env, 1, 1000);
+        });
+
+        // Register CallerContract A & B
+        let caller_a = env.register(CallerContract, ());
+        let caller_b = env.register(CallerContract, ());
+
+        let client_a = CallerContractClient::new(&env, &caller_a);
+        let client_b = CallerContractClient::new(&env, &caller_b);
+
+        let config = xlm_only_config(&env, 500);
+
+        // Authorize A
+        env.as_contract(&contract_id, || {
+            RewardManager::authorize_contract(env.clone(), admin.clone(), caller_a.clone()).unwrap();
+        });
+
+        // Update A to B
+        env.as_contract(&contract_id, || {
+            RewardManager::update_authorized_contract(env.clone(), admin.clone(), caller_a.clone(), caller_b.clone()).unwrap();
+        });
+
+        // A should fail, B should succeed
+        let res_a = client_a.try_call_distribute(&contract_id, &1, &player, &config);
+        assert!(res_a.is_err());
+
+        let res_b = client_b.call_distribute(&contract_id, &1, &player, &config);
+        assert!(res_b.is_ok());
+    }
+
+    #[test]
+    fn test_authorization_admin_only() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, token_address, _) = setup(&env);
+        let admin = Address::generate(&env);
+        let rogue = Address::generate(&env);
+        let contract_to_auth = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            RewardManager::initialize(env.clone(), admin.clone(), token_address.clone()).unwrap();
+            
+            // Rogue tries to authorize
+            let res = RewardManager::authorize_contract(env.clone(), rogue, contract_to_auth);
+            assert_eq!(res, Err(RewardErrorCode::Unauthorized));
+        });
     }
 }

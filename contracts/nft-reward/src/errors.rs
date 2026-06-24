@@ -12,4 +12,6 @@ pub enum NftErrorCode {
     InvalidRarity = 6,
     AlreadyInitialized = 7,
     MaxSupplyReached = 8,
+    UnauthorizedCaller = 9,
+    InvalidContractAddress = 10,
 }

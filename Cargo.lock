@@ -662,6 +662,7 @@ version = "0.0.0"
 dependencies = [
  "hunty-migration",
  "nft-reward",
+ "reward-interface",
  "reward-manager",
  "soroban-sdk",
 ]
@@ -992,11 +993,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "reward-interface"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "reward-manager"
 version = "0.0.0"
 dependencies = [
  "hunty-migration",
  "nft-reward",
+ "reward-interface",
  "soroban-sdk",
 ]
 

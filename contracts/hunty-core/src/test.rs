@@ -12,9 +12,9 @@ mod test {
     use crate::storage::Storage;
     use crate::types::HuntStatus;
     use crate::HuntyCore;
-    use nft_reward::{NftMetadata, NftReward};
+    use nft_reward::NftReward;
     use reward_manager::RewardManager;
-    use soroban_sdk::testutils::{Address as _, Ledger as _, Register as _};
+    use soroban_sdk::testutils::{Address as _, Ledger as _};
     use soroban_sdk::{token, String as SorobanString};
 
     /// Runs a closure inside a registered HuntyCore contract context so storage is accessible.
@@ -302,7 +302,7 @@ mod test {
         let title = String::from_str(&env, "Test Hunt");
         let description = String::from_str(&env, "Description");
 
-        let (hunt_id1, hunt_id2, hunt1, hunt2) = with_core_contract(&env, |env, _cid| {
+        let (_hunt_id1, _hunt_id2, hunt1, hunt2) = with_core_contract(&env, |env, _cid| {
             let hunt_id1 = HuntyCore::create_hunt(
                 env.clone(),
                 creator1.clone(),
@@ -1138,7 +1138,6 @@ mod test {
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
-        let attacker = Address::generate(&env);
         let question = String::from_str(&env, "Valid question");
         let answer = String::from_str(&env, "a");
 
@@ -1174,9 +1173,6 @@ mod test {
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
-        let attacker = Address::generate(&env);
-        let question = String::from_str(&env, "Valid question");
-        let answer = String::from_str(&env, "a");
 
         with_core_contract(&env, |env, _cid| {
             let hunt_id = HuntyCore::create_hunt(
@@ -2033,7 +2029,7 @@ mod test {
         let nft_contract_id = env.register(NftReward, ());
 
         // Setup RewardManager with XLM token and default NFT contract
-        let (reward_manager_id, token_address, token_admin) =
+        let (reward_manager_id, token_address, _token_admin) =
             setup_reward_manager(&env, Some(&nft_contract_id));
 
         // Mint XLM to funder

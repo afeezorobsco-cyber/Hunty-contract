@@ -7,7 +7,7 @@ use crate::types::{
     HuntDeactivatedEvent, HuntStatistics, HuntStatus, LeaderboardEntry, PlayerProgress,
     PlayerRegisteredEvent, RewardClaimedEvent, RewardConfig,
 };
-use reward_manager::RewardErrorCode;
+use reward_interface::RewardErrorCode;
 use soroban_sdk::{
     contract, contractimpl, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
 };
@@ -473,7 +473,7 @@ impl HuntyCore {
             } else {
                 (None, String::from_str(&env, ""), String::from_str(&env, ""), String::from_str(&env, ""), String::from_str(&env, ""))
             };
-            let rm_reward_config = reward_manager::RewardConfig {
+            let rm_reward_config = reward_interface::RewardConfig {
                 xlm_amount,
                 nft_contract,
                 nft_title,
@@ -848,12 +848,17 @@ impl HuntyCore {
             total_score_sum += p.total_score as u64;
         }
         let completion_rate_percent = if total_players > 0 {
-            (completed_count * 100) / total_players
+            completed_count
+                .checked_mul(100)
+                .and_then(|v| v.checked_div(total_players))
+                .unwrap_or(0)
         } else {
             0
         };
         let average_score = if total_players > 0 {
-            (total_score_sum / u64::from(total_players)) as u32
+            total_score_sum
+                .checked_div(u64::from(total_players))
+                .unwrap_or(0) as u32
         } else {
             0
         };

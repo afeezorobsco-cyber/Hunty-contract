@@ -10,6 +10,7 @@ doctest = false
 
 [dependencies]
 soroban-sdk = { workspace = true }
+reward-interface = { path = "../reward-interface" }
 nft-reward = { path = "../nft-reward" }
 hunty-migration = { path = "../migration", package = "hunty-migration" }
 

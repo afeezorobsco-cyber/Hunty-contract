@@ -4,7 +4,7 @@ mod test {
     use crate::storage::Storage;
     use crate::types::RewardConfig;
     use crate::RewardManager;
-    use soroban_sdk::testutils::{Address as _, Ledger as _};
+    use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{symbol_short, token, Address, Env};
 
     /// Registers the RewardManager contract and a mock SAC token.
@@ -1087,13 +1087,13 @@ mod test {
         let env = Env::default();
         env.mock_all_auths_allowing_non_root_auth();
         let (contract_id, token_address, token_admin) = setup(&env);
-        let admin = Address::generate(&env);
         let creator = Address::generate(&env);
 
         mint_tokens(&env, &token_address, &token_admin, &creator, 10_000);
 
         env.as_contract(&contract_id, || {
-            RewardManager::initialize(env.clone(), token_admin.clone(), token_address.clone());
+            RewardManager::initialize(env.clone(), token_admin.clone(), token_address.clone())
+                .unwrap();
             RewardManager::create_reward_pool(env.clone(), creator.clone(), 77, 0).unwrap();
             RewardManager::fund_reward_pool(env.clone(), creator.clone(), 77, 6_000).unwrap();
             RewardManager::refund_pool(env.clone(), creator.clone(), 77).unwrap();
@@ -1110,14 +1110,14 @@ mod test {
         let env = Env::default();
         env.mock_all_auths_allowing_non_root_auth();
         let (contract_id, token_address, token_admin) = setup(&env);
-        let admin = Address::generate(&env);
         let creator = Address::generate(&env);
         let attacker = Address::generate(&env);
 
         mint_tokens(&env, &token_address, &token_admin, &creator, 10_000);
 
         env.as_contract(&contract_id, || {
-            RewardManager::initialize(env.clone(), token_admin.clone(), token_address.clone());
+            RewardManager::initialize(env.clone(), token_admin.clone(), token_address.clone())
+                .unwrap();
             RewardManager::create_reward_pool(env.clone(), creator.clone(), 88, 0).unwrap();
             RewardManager::fund_reward_pool(env.clone(), creator.clone(), 88, 1_500).unwrap();
 
@@ -1289,7 +1289,7 @@ mod test {
     fn test_admin_withdraw_unclaimed_never_funded() {
         let env = Env::default();
         env.mock_all_auths_allowing_non_root_auth();
-        let (contract_id, token_address, token_admin) = setup(&env);
+        let (contract_id, token_address, _token_admin) = setup(&env);
         let admin = Address::generate(&env);
         let creator = Address::generate(&env);
         let recipient = Address::generate(&env);
@@ -1305,6 +1305,7 @@ mod test {
                 admin.clone(),
                 1,
                 recipient.clone(),
+                0,
             );
             assert_eq!(result, Err(RewardErrorCode::InvalidAmount));
         });

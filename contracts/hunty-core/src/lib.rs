@@ -5,7 +5,7 @@ use crate::types::{
     AnswerIncorrectEvent, Clue, ClueAddedEvent, ClueCompletedEvent, ClueInfo, Hunt,
     HuntActivatedEvent, HuntCancelledEvent, HuntCompletedEvent, HuntCreatedEvent,
     HuntDeactivatedEvent, HuntStatistics, HuntStatus, LeaderboardEntry, PlayerProgress,
-    PlayerRegisteredEvent, RewardClaimedEvent, RewardConfig,
+    PlayerRegisteredEvent, RateLimitStatus, RewardClaimedEvent, RewardConfig,
 };
 use reward_interface::RewardErrorCode;
 use soroban_sdk::{
@@ -77,8 +77,10 @@ impl HuntyCore {
             return Err(HuntErrorCode::InvalidDescription);
         }
 
-        // Get current timestamp
         let current_time = env.ledger().timestamp();
+        rate_limit::RateLimiter::check_and_increment(&env, &creator, current_time)?;
+
+        // Get current timestamp
 
         // Generate unique hunt ID
         let hunt_id = Storage::next_hunt_id(&env);
@@ -1160,6 +1162,7 @@ pub fn get_health_dashboard(env: Env) -> monitoring::ContractHealth {
 mod errors;
 mod migration;
 mod monitoring;
+mod rate_limit;
 mod storage;
 pub mod types;
 

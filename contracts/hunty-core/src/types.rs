@@ -329,3 +329,12 @@ pub struct HuntStatistics {
     pub total_score_sum: u64,
     pub average_score: u32,
 }
+
+/// Rate limit status for hunt creation by a creator address.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RateLimitStatus {
+    pub creations_today: u32,
+    pub daily_limit: u32,
+    pub cooldown_seconds: u64,
+}

@@ -17,10 +17,6 @@ pub struct RewardConfig {
     pub nft_contract: Option<Address>,
     pub max_winners: u32,
     pub claimed_count: u32,
-    /// NFT rarity: 0 = default, 1-5 = common to legendary.
-    pub nft_rarity: u32,
-    /// NFT tier: 0 = none, custom tier value.
-    pub nft_tier: u32,
 }
 
 #[contracttype]
@@ -81,7 +77,7 @@ pub struct HuntActivatedEvent {
 }
 
 #[contracttype]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Location {
     pub latitude: i64,  // Degrees * 1_000_000
     pub longitude: i64, // Degrees * 1_000_000
@@ -203,8 +199,6 @@ impl RewardConfig {
         nft_enabled: bool,
         nft_contract: Option<Address>,
         max_winners: u32,
-        nft_rarity: u32,
-        nft_tier: u32,
     ) -> Self {
         Self {
             xlm_pool,
@@ -212,8 +206,6 @@ impl RewardConfig {
             nft_contract,
             max_winners,
             claimed_count: 0,
-            nft_rarity,
-            nft_tier,
         }
     }
 
@@ -259,6 +251,7 @@ pub struct HuntCompletedEvent {
     pub player: Address,
     pub total_score: u32,
     pub completion_time: u64,
+    pub completion_rank: u32,
 }
 
 #[contracttype]
@@ -300,9 +293,6 @@ pub struct AnswerIncorrectEvent {
 }
 
 /// Leaderboard entry for a single player in a hunt (read-only query result).
-/// `queried_at` is the ledger timestamp at the moment the leaderboard was fetched,
-/// giving frontend caches a reliable "last refreshed" anchor distinct from
-/// the per-player `completed_at`.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeaderboardEntry {
@@ -311,7 +301,6 @@ pub struct LeaderboardEntry {
     pub score: u32,
     pub completed_at: u64,
     pub is_completed: bool,
-    pub queried_at: u64,
 }
 
 /// Aggregate statistics for a hunt (read-only query result).

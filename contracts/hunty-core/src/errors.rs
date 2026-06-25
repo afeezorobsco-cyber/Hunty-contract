@@ -26,8 +26,12 @@ pub enum HuntErrorCode {
     RewardAlreadyClaimed = 19,
     RewardDistributionFailed = 20,
     NoRewardsConfigured = 21,
+pub enum Error {
+    // ... existing errors
+
     NoRequiredClues = 22,
     ScoreOverflow = 23,
+}ain
 }
 
 #[derive(Debug)]
@@ -51,6 +55,9 @@ pub enum HuntError {
     RewardAlreadyClaimed { hunt_id: u64 },
     RewardDistributionFailed { hunt_id: u64 },
     NoRewardsConfigured { hunt_id: u64 },
+pub enum Event {
+    // ... existing events
+
     NoRequiredClues { hunt_id: u64 },
     ScoreOverflow,
 }
@@ -122,12 +129,16 @@ impl fmt::Display for HuntError {
             HuntError::NoRewardsConfigured { hunt_id } => {
                 write!(f, "No rewards configured for hunt {}", hunt_id)
             }
-            HuntError::NoRequiredClues { hunt_id } => {
-                write!(f, "Hunt {} has no required clues; at least one required clue must exist before activation", hunt_id)
-            }
-            HuntError::ScoreOverflow => {
-                write!(f, "Score calculation overflow")
-            }
+HuntError::NoRequiredClues { hunt_id } => {
+    write!(
+        f,
+        "Hunt {} has no required clues; at least one required clue must exist before activation",
+        hunt_id
+    )
+}
+HuntError::ScoreOverflow => {
+    write!(f, "Score calculation overflow")
+}
         }
     }
 }
@@ -154,8 +165,12 @@ impl From<HuntError> for HuntErrorCode {
             HuntError::RewardAlreadyClaimed { .. } => HuntErrorCode::RewardAlreadyClaimed,
             HuntError::RewardDistributionFailed { .. } => HuntErrorCode::RewardDistributionFailed,
             HuntError::NoRewardsConfigured { .. } => HuntErrorCode::NoRewardsConfigured,
-            HuntError::NoRequiredClues { .. } => HuntErrorCode::NoRequiredClues,
-            HuntError::ScoreOverflow => HuntErrorCode::ScoreOverflow,
+match error {
+    // ... existing mappings
+
+    HuntError::NoRequiredClues { .. } => HuntErrorCode::NoRequiredClues,
+    HuntError::ScoreOverflow => HuntErrorCode::ScoreOverflow,
+}
         }
     }
 }

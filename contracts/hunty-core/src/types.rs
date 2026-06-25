@@ -17,10 +17,6 @@ pub struct RewardConfig {
     pub nft_contract: Option<Address>,
     pub max_winners: u32,
     pub claimed_count: u32,
-    /// NFT rarity: 0 = default, 1-5 = common to legendary.
-    pub nft_rarity: u32,
-    /// NFT tier: 0 = none, custom tier value.
-    pub nft_tier: u32,
 }
 
 #[contracttype]
@@ -80,37 +76,13 @@ pub struct HuntActivatedEvent {
 }
 
 #[contracttype]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Location {
     pub latitude: i64,  // Degrees * 1_000_000
     pub longitude: i64, // Degrees * 1_000_000
     pub radius: u32,
 }
 
-impl Default for Location {
-    fn default() -> Self {
-        Self {
-            latitude: 0,
-            longitude: 0,
-            radius: 0,
-        }
-    }
-}
-
-/// Internal storage representation of player progress.
-/// Does not store `player` or `hunt_id` — those are already the storage key.
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct StoredPlayerProgress {
-    pub completed_clues: Vec<u32>,
-    pub total_score: u32,
-    pub started_at: u64,
-    pub completed_at: u64,
-    pub is_completed: bool,
-    pub reward_claimed: bool,
-}
-
-/// Public view of player progress, with `player` and `hunt_id` reconstructed from the key.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct PlayerProgress {
@@ -135,32 +107,6 @@ impl PlayerProgress {
             completed_at: 0,
             is_completed: false,
             reward_claimed: false,
-        }
-    }
-
-    /// Convert to the compact form stored on-chain (drops redundant key fields).
-    pub fn to_stored(&self) -> StoredPlayerProgress {
-        StoredPlayerProgress {
-            completed_clues: self.completed_clues.clone(),
-            total_score: self.total_score,
-            started_at: self.started_at,
-            completed_at: self.completed_at,
-            is_completed: self.is_completed,
-            reward_claimed: self.reward_claimed,
-        }
-    }
-
-    /// Reconstruct from stored form plus the key fields.
-    pub fn from_stored(stored: StoredPlayerProgress, player: Address, hunt_id: u64) -> Self {
-        Self {
-            player,
-            hunt_id,
-            completed_clues: stored.completed_clues,
-            total_score: stored.total_score,
-            started_at: stored.started_at,
-            completed_at: stored.completed_at,
-            is_completed: stored.is_completed,
-            reward_claimed: stored.reward_claimed,
         }
     }
 
@@ -199,8 +145,6 @@ impl RewardConfig {
         nft_enabled: bool,
         nft_contract: Option<Address>,
         max_winners: u32,
-        nft_rarity: u32,
-        nft_tier: u32,
     ) -> Self {
         Self {
             xlm_pool,
@@ -208,8 +152,6 @@ impl RewardConfig {
             nft_contract,
             max_winners,
             claimed_count: 0,
-            nft_rarity,
-            nft_tier,
         }
     }
 
@@ -255,6 +197,7 @@ pub struct HuntCompletedEvent {
     pub player: Address,
     pub total_score: u32,
     pub completion_time: u64,
+    pub completion_rank: u32,
 }
 
 #[contracttype]
@@ -296,9 +239,6 @@ pub struct AnswerIncorrectEvent {
 }
 
 /// Leaderboard entry for a single player in a hunt (read-only query result).
-/// `queried_at` is the ledger timestamp at the moment the leaderboard was fetched,
-/// giving frontend caches a reliable "last refreshed" anchor distinct from
-/// the per-player `completed_at`.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeaderboardEntry {
@@ -307,7 +247,6 @@ pub struct LeaderboardEntry {
     pub score: u32,
     pub completed_at: u64,
     pub is_completed: bool,
-    pub queried_at: u64,
 }
 
 /// Aggregate statistics for a hunt (read-only query result).

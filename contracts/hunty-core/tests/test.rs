@@ -1,4 +1,4 @@
-use hunty_core::HuntyCore;
+use hunty_core::{HuntyCore, HuntyCoreClient};
 use reward_manager::RewardManager;
 use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{token, Address, Env, String};
@@ -16,10 +16,6 @@ fn setup_reward_manager(env: &Env) -> (Address, Address) {
     (reward_manager_id, token_address)
 }
 
-fn as_core_contract<T>(env: &Env, contract_id: &Address, f: impl FnOnce(&Env) -> T) -> T {
-    env.as_contract(contract_id, || f(env))
-}
-
 #[test]
 fn test_cancel_hunt_with_reward_pool_refund() {
     let env = Env::default();
@@ -34,32 +30,28 @@ fn test_cancel_hunt_with_reward_pool_refund() {
     let core_id = env.register(HuntyCore, ());
     let (reward_manager_id, token_address) = setup_reward_manager(&env);
 
+    let client = HuntyCoreClient::new(&env, &core_id);
+
     // Initialize admin
-    env.mock_all_auths();
-    as_core_contract(&env, &core_id, |env| {
-        HuntyCore::initialize_admin(env.clone(), admin.clone()).unwrap();
-    });
+    client.initialize_admin(&admin);
 
     // Mint tokens to creator
     let sac = token::StellarAssetClient::new(&env, &token_address);
     sac.mint(&creator, &5_000);
 
-    let hunt_id = as_core_contract(&env, &core_id, |env| {
-        let hunt_id = HuntyCore::create_hunt(
-            env.clone(),
-            creator.clone(),
-            String::from_str(env, "Integration Refund Hunt"),
-            String::from_str(env, "Testing refund on cancel"),
-            None,
-            None,
-        )
-        .unwrap();
-        HuntyCore::add_clue(env.clone(), hunt_id, question, answer, 1, true, 1).unwrap();
-        HuntyCore::activate_hunt(env.clone(), hunt_id, creator.clone()).unwrap();
-        HuntyCore::set_reward_manager(env.clone(), admin.clone(), reward_manager_id.clone()).unwrap();
-        hunt_id
-    });
+    // Create hunt, add clue, activate, and set reward manager
+    let hunt_id = client.create_hunt(
+        &creator,
+        &String::from_str(&env, "Integration Refund Hunt"),
+        &String::from_str(&env, "Testing refund on cancel"),
+        &None,
+        &None,
+    );
+    client.add_clue(&hunt_id, &question, &answer, &1, &true, &1);
+    client.activate_hunt(&hunt_id, &creator);
+    client.set_reward_manager(&admin, &reward_manager_id);
 
+    // Create reward pool on reward manager
     env.as_contract(&reward_manager_id, || {
         RewardManager::create_reward_pool(env.clone(), creator.clone(), hunt_id, 0).unwrap();
         RewardManager::fund_reward_pool(env.clone(), creator.clone(), hunt_id, 5_000).unwrap();
@@ -69,9 +61,8 @@ fn test_cancel_hunt_with_reward_pool_refund() {
         assert_eq!(RewardManager::get_pool_balance(env.clone(), hunt_id), 5_000);
     });
 
-    as_core_contract(&env, &core_id, |env| {
-        HuntyCore::cancel_hunt(env.clone(), hunt_id, creator.clone()).unwrap();
-    });
+    // Cancel the hunt — should trigger cross-contract refund_pool call
+    client.cancel_hunt(&hunt_id, &creator);
 
     env.as_contract(&reward_manager_id, || {
         assert_eq!(RewardManager::get_pool_balance(env.clone(), hunt_id), 0);

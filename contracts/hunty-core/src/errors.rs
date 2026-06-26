@@ -23,14 +23,23 @@ pub enum HuntErrorCode {
     TooManyClues = 16,
     InvalidQuestion = 17,
     RefundFailed = 18,
-    NoCluesAdded = 17,
-    HuntNotCompleted = 18,
-    RewardAlreadyClaimed = 19,
-    RewardDistributionFailed = 20,
-    NoRewardsConfigured = 21,
-    NoRequiredClues = 22,
-    InvalidRarity = 23,
-    InvalidTimeBonusConfig = 24,
+    NoCluesAdded = 19,
+    HuntNotCompleted = 20,
+    RewardAlreadyClaimed = 21,
+    RewardDistributionFailed = 22,
+    NoRewardsConfigured = 23,
+    DuplicateSubmission = 24,
+    SubmissionExpired = 25,
+    BannedPlayer = 26,
+    NoRequiredClues = 27,
+    RateLimitExceeded = 28,
+    ScoreOverflow = 29,
+    InvalidRarity = 30,
+    InvalidTimeBonusConfig = 31,
+    InvalidEndTime = 32,
+    ContractPaused = 33,
+    InvalidDifficulty = 34,
+    InvalidPoints = 35,
 }
 
 #[derive(Debug)]
@@ -58,8 +67,11 @@ pub enum HuntError {
     SubmissionExpired { submitted_at: u64, current_time: u64 },
     BannedPlayer { hunt_id: u64, player: soroban_sdk::Address },
     NoRequiredClues { hunt_id: u64 },
+    RateLimitExceeded { cooldown_remaining: u64 },
+    ScoreOverflow,
     InvalidRarity { value: u32 },
     InvalidTimeBonusConfig,
+    InvalidEndTime,
 }
 
 impl fmt::Display for HuntError {
@@ -161,6 +173,12 @@ impl fmt::Display for HuntError {
             HuntError::InvalidRarity { value } => {
                 write!(f, "Invalid rarity value: {}", value)
             }
+            HuntError::InvalidTimeBonusConfig => {
+                write!(f, "Invalid time bonus configuration")
+            }
+            HuntError::InvalidEndTime => {
+                write!(f, "Invalid end time")
+            }
         }
     }
 }
@@ -191,8 +209,11 @@ impl From<HuntError> for HuntErrorCode {
             HuntError::SubmissionExpired { .. } => HuntErrorCode::SubmissionExpired,
             HuntError::BannedPlayer { .. } => HuntErrorCode::BannedPlayer,
             HuntError::NoRequiredClues { .. } => HuntErrorCode::NoRequiredClues,
+            HuntError::RateLimitExceeded { .. } => HuntErrorCode::RateLimitExceeded,
+            HuntError::ScoreOverflow => HuntErrorCode::ScoreOverflow,
             HuntError::InvalidRarity { .. } => HuntErrorCode::InvalidRarity,
             HuntError::InvalidTimeBonusConfig => HuntErrorCode::InvalidTimeBonusConfig,
+            HuntError::InvalidEndTime => HuntErrorCode::InvalidEndTime,
         }
     }
 }

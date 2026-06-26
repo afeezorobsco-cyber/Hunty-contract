@@ -5,7 +5,7 @@ use crate::types::{
     AnswerIncorrectEvent, Clue, ClueAddedEvent, ClueCompletedEvent, ClueInfo,
     Hunt, HuntActivatedEvent, HuntCancelledEvent, HuntCompletedEvent, HuntCreatedEvent,
     HuntDeactivatedEvent, HuntStatistics, HuntStatus, LeaderboardEntry, PlayerProgress,
-    PlayerRegisteredEvent, RewardClaimedEvent, HuntRewardConfig, TimeBonusConfig,
+    PlayerRegisteredEvent, RewardClaimedEvent, RewardConfig, TimeBonusConfig,
     RewardClaimFailedEvent, ClueAliasesAddedEvent, RewardManagerSetEvent, StoredPlayerProgress,
 };
 use reward_interface::RewardErrorCode;
@@ -96,10 +96,13 @@ impl HuntyCore {
 
         // Initialize reward config with zero pool
         let reward_config = RewardConfig::new(
+            &env,
             0,     // xlm_pool: zero initially
             false, // nft_enabled: false initially
             None,  // nft_contract: None initially
             0,     // max_winners: 0 initially
+            0,     // nft_rarity: zero initially
+            0,     // nft_tier: zero initially
         );
 
         // Create the hunt with Draft status
@@ -113,10 +116,14 @@ impl HuntyCore {
             activated_at: 0, // Will be set when hunt is activated
             end_time: end_time.unwrap_or(0),
             reward_config,
+            time_bonus_start_bps: None,
+            time_bonus_min_bps: None,
+            time_bonus_decay_secs: None,
             total_clues: 0, // Empty clue list initially
             required_clues: 0,
             completed_count: 0,
             max_submissions_per_minute,
+            max_attempts_per_clue: 10,
         };
 
         // Store the hunt
@@ -162,6 +169,7 @@ impl HuntyCore {
             description,
             start_time,
             end_time,
+            template_hunt.max_submissions_per_minute,
         )?;
 
         let template_clues = Storage::list_clues_for_hunt(&env, template_hunt_id, 0, MAX_CLUES_PER_HUNT);
@@ -188,6 +196,7 @@ impl HuntyCore {
                 hunt_id,
                 clue_id: cloned_clue.clue_id,
                 creator: creator.clone(),
+                question: cloned_clue.question.clone(),
                 points: cloned_clue.points,
                 is_required: cloned_clue.is_required,
                 difficulty: cloned_clue.difficulty,
@@ -317,12 +326,15 @@ impl HuntyCore {
         let clue_id = Storage::next_clue_id(&env, hunt_id);
         let answer_hash = Self::normalize_and_hash_answer(&env, hunt_id, clue_id, &answer)
             .map_err(HuntErrorCode::from)?;
+        let mut answer_hashes = Vec::new(&env);
+        answer_hashes.push_back(answer_hash);
         let clue = Clue {
             clue_id,
             question: question.clone(),
-            answer_hash,
+            answer_hashes,
             points,
             is_required,
+            difficulty,
         };
         Storage::save_clue(&env, hunt_id, &clue);
         let mut updated = hunt;
@@ -374,7 +386,7 @@ impl HuntyCore {
         for i in 0..answers.len() {
             let answer = answers.get(i).unwrap();
             let hash =
-                Self::normalize_and_hash_answer(&env, &answer).map_err(HuntErrorCode::from)?;
+                Self::normalize_and_hash_answer(&env, hunt_id, clue_id, &answer).map_err(HuntErrorCode::from)?;
             clue.answer_hashes.push_back(hash);
         }
 
@@ -403,6 +415,7 @@ impl HuntyCore {
             question: clue.question,
             points: clue.points,
             is_required: clue.is_required,
+            difficulty: clue.difficulty,
         })
     }
 
@@ -410,7 +423,8 @@ impl HuntyCore {
     /// This loads all clues; for large hunts use `list_clues_paginated` to limit gas cost.
     /// Estimated gas: O(n) where n = total_clues, ~5_000 gas per clue.
     pub fn list_clues(env: Env, hunt_id: u64) -> Vec<ClueInfo> {
-        let raw = Storage::list_clues_for_hunt(&env, hunt_id);
+        let clue_count = Storage::get_clue_counter(&env, hunt_id);
+        let raw = Storage::list_clues_for_hunt(&env, hunt_id, 0, clue_count);
         let mut out = Vec::new(&env);
         let limit = core::cmp::min(raw.len(), MAX_BATCH_SIZE);
         for i in 0..limit {
@@ -420,6 +434,7 @@ impl HuntyCore {
                 question: c.question,
                 points: c.points,
                 is_required: c.is_required,
+                difficulty: c.difficulty,
             });
         }
         out
@@ -434,23 +449,19 @@ impl HuntyCore {
         page: u32,
         page_size: u32,
     ) -> Vec<ClueInfo> {
-        let raw = Storage::list_clues_for_hunt(&env, hunt_id);
         let effective_page_size = core::cmp::min(page_size, MAX_BATCH_SIZE);
-        let start = (page as usize).saturating_mul(effective_page_size as usize);
-        let end = core::cmp::min(
-            start.saturating_add(effective_page_size as usize),
-            raw.len() as usize,
-        );
+        let offset = page.saturating_mul(effective_page_size);
+        let raw = Storage::list_clues_for_hunt(&env, hunt_id, offset, effective_page_size);
         let mut out = Vec::new(&env);
-        for i in start..end {
-            if let Some(c) = raw.get(i as u32) {
-                out.push_back(ClueInfo {
-                    clue_id: c.clue_id,
-                    question: c.question,
-                    points: c.points,
-                    is_required: c.is_required,
-                });
-            }
+        for i in 0..raw.len() {
+            let c = raw.get(i).unwrap();
+            out.push_back(ClueInfo {
+                clue_id: c.clue_id,
+                question: c.question,
+                points: c.points,
+                is_required: c.is_required,
+                difficulty: c.difficulty,
+            });
         }
         out
     }
@@ -504,6 +515,19 @@ impl HuntyCore {
     #[inline]
     fn is_ascii_space(b: u8) -> bool {
         b.is_ascii_whitespace()
+    }
+
+    fn require_admin(env: &Env, admin: &Address) -> Result<(), HuntErrorCode> {
+        admin.require_auth();
+        let stored_admin = Storage::get_admin(env).ok_or(HuntErrorCode::Unauthorized)?;
+        if stored_admin != admin.clone() {
+            return Err(HuntErrorCode::Unauthorized);
+        }
+        Ok(())
+    }
+
+    fn validate_rarity(v: u32) -> bool {
+        v <= 5
     }
 
     pub fn activate_hunt(env: Env, hunt_id: u64, caller: Address) -> Result<(), HuntErrorCode> {
@@ -718,8 +742,18 @@ impl HuntyCore {
     /// * `RewardDistributionFailed` - Cross-contract call failed
     pub fn complete_hunt(env: Env, hunt_id: u64, player: Address) -> Result<(), HuntErrorCode> {
         player.require_auth();
+        Self::process_reward_distribution(&env, hunt_id, player)
+    }
 
-        let mut hunt = Storage::get_hunt_or_error(&env, hunt_id).map_err(HuntErrorCode::from)?;
+    /// Allows the hunt creator to distribute rewards to multiple players in batch.
+    /// This is more gas-efficient than individual claims when many players finish at once.
+    pub fn batch_complete_hunt(
+        env: Env,
+        hunt_id: u64,
+        creator: Address,
+        players: Vec<Address>,
+    ) -> Result<(), HuntErrorCode> {
+        creator.require_auth();
 
         let hunt = Storage::get_hunt_or_error(&env, hunt_id).map_err(HuntErrorCode::from)?;
 
@@ -831,7 +865,7 @@ impl HuntyCore {
         let reward_amount = hunt.reward_config.reward_per_winner();
         let nft_awarded = hunt.reward_config.nft_enabled;
 
-        if !Self::validate_rarity(hunt.reward_config.distribution_config.nft_rarity) {
+        if !Self::validate_rarity(hunt.reward_config.nft_rarity) {
             return Err(HuntErrorCode::InvalidRarity);
         }
 
@@ -844,7 +878,6 @@ impl HuntyCore {
             };
             let (nft_contract, nft_title, nft_desc, nft_uri, nft_hunt_title) = if nft_awarded {
                 hunt.reward_config
-                    .distribution_config
                     .nft_contract
                     .clone()
                     .map(|nft_contract| {
@@ -879,16 +912,16 @@ impl HuntyCore {
                 nft_description: nft_desc,
                 nft_image_uri: nft_uri,
                 nft_hunt_title,
-                nft_rarity: hunt.reward_config.distribution_config.nft_rarity,
-                nft_tier: hunt.reward_config.distribution_config.nft_tier,
+                nft_rarity: hunt.reward_config.nft_rarity,
+                nft_tier: hunt.reward_config.nft_tier,
             };
 
             // Only call RewardManager when there is at least one reward type
             if rm_reward_config.is_valid() {
                 let mut args: Vec<Val> = Vec::new(&env);
-                args.push_back(hunt_id.into_val(&env));
-                args.push_back(player.clone().into_val(&env));
-                args.push_back(rm_reward_config.into_val(&env));
+                args.push_back(hunt_id.into_val(env));
+                args.push_back(player.clone().into_val(env));
+                args.push_back(rm_reward_config.into_val(env));
 
                 let result = env.try_invoke_contract::<(), RewardErrorCode>(
                     &reward_manager_addr,
@@ -995,7 +1028,7 @@ impl HuntyCore {
         let Some(clue) = Storage::get_clue(&env, hunt_id, clue_id) else {
             return false;
         };
-        let Ok(submitted_hash) = Self::normalize_and_hash_answer(&env, &answer) else {
+        let Ok(submitted_hash) = Self::normalize_and_hash_answer(&env, hunt_id, clue_id, &answer) else {
             return false;
         };
 
@@ -1127,7 +1160,6 @@ impl HuntyCore {
         }
 
         if !answer_correct {
-            let attempt_number = progress.record_failed_attempt(clue_id);
             Storage::save_player_progress(&env, &progress);
             let incorrect_event = AnswerIncorrectEvent {
                 hunt_id,
@@ -1271,7 +1303,8 @@ impl HuntyCore {
         progress: &PlayerProgress,
     ) -> bool {
         // Get all clues for the hunt
-        let all_clues = Storage::list_clues_for_hunt(env, hunt_id);
+        let clue_count = Storage::get_clue_counter(env, hunt_id);
+        let all_clues = Storage::list_clues_for_hunt(env, hunt_id, 0, clue_count);
 
         // Iterate through all clues and check if all required ones are completed
         for i in 0..all_clues.len() {
@@ -1479,11 +1512,10 @@ impl HuntyCore {
                 .ok_or(HuntErrorCode::ScoreOverflow)?;
         }
         let completion_rate_percent = if total_players > 0 {
-let completion_percentage =
-    completed_count
-        .checked_mul(100)
-        .ok_or(HuntErrorCode::ScoreOverflow)?
-        / total_players;
+            completed_count
+                .checked_mul(100)
+                .ok_or(HuntErrorCode::ScoreOverflow)?
+                / total_players
         } else {
             0
         };
@@ -1621,7 +1653,7 @@ pub fn get_schema_version(env: Env) -> u32 {
 
 pub fn initialize_schema(env: Env, admin: Address) {
     admin.require_auth();
-    migration::HuntyCoreMigration::initialize_schema(&env);
+    migration::HuntyCoreMigration::initialize_schema(&env, &admin);
 }
 
 pub fn run_migration(
@@ -1629,10 +1661,11 @@ pub fn run_migration(
     admin: Address,
     target_version: u32,
     dry_run: bool,
-) -> migration::MigrationReport {
+) -> Result<migration::MigrationReport, hunty_migration::UpgradeAuthError> {
     admin.require_auth();
     migration::HuntyCoreMigration::run_migration(
         &env,
+        &admin,
         target_version,
         dry_run,
     )
@@ -1641,14 +1674,13 @@ pub fn run_migration(
 pub fn rollback_migration(
     env: Env,
     admin: Address,
-) -> Option<migration::MigrationReport> {
-    migration::HuntyCoreMigration::rollback_migration(&env, admin)
+) -> Result<migration::MigrationReport, hunty_migration::UpgradeAuthError> {
+    migration::HuntyCoreMigration::rollback_migration(&env, &admin)
 }
 
 pub fn get_health_dashboard(env: Env) -> monitoring::ContractHealth {
     monitoring::Monitoring::health_dashboard(&env)
 }
-    }
 
     fn sync_hunt_clue_counts(env: &Env, hunt_id: u64, hunt: &mut Hunt) {
         let clues = Storage::list_clues_for_hunt(env, hunt_id, 0, u32::MAX);
@@ -1685,6 +1717,7 @@ mod errors;
 mod migration;
 mod monitoring;
 mod rate_limit;
+mod sanitization;
 mod storage;
 pub mod types;
 

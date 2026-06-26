@@ -1285,6 +1285,36 @@ mod test {
     }
 
     #[test]
+    fn test_activate_hunt_end_time_in_past() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+        env.mock_all_auths();
+        let creator = Address::generate(&env);
+
+        let question = String::from_str(&env, "Valid question");
+        let answer = String::from_str(&env, "a");
+
+        with_core_contract(&env, |env, _cid| {
+            // Create a hunt with end_time in the past
+            let hunt_id = HuntyCore::create_hunt(
+                env.clone(),
+                creator.clone(),
+                String::from_str(env, "Expired Hunt"),
+                String::from_str(env, "This hunt has an end_time in the past"),
+                Some(1_699_999_999), // end_time < current_time (1_700_000_000)
+                None,
+                0,
+            )
+            .unwrap();
+
+            HuntyCore::add_clue(env.clone(), hunt_id, question, answer, 1, true).unwrap();
+
+            let err = HuntyCore::activate_hunt(env.clone(), hunt_id, creator.clone()).unwrap_err();
+            assert_eq!(err, HuntErrorCode::HuntEndTimeInPast);
+        });
+    }
+
+    #[test]
     fn test_deactivate_hunt_success() {
         let env = Env::default();
         env.ledger().set_timestamp(1_700_000_000);

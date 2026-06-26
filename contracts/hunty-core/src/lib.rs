@@ -343,6 +343,12 @@ impl HuntyCore {
         }
 
         let current_time = env.ledger().timestamp();
+
+        // Reject activation if end_time is set and already in the past
+        if hunt.end_time != 0 && hunt.end_time <= current_time {
+            return Err(HuntErrorCode::HuntEndTimeInPast);
+        }
+
         hunt.status = HuntStatus::Active;
         hunt.activated_at = current_time;
 
@@ -630,39 +636,39 @@ impl HuntyCore {
     /// * `HuntNotActive` - Hunt has ended (past end_time)
     /// * `DuplicateRegistration` - Player is already registered for this hunt
     pub fn register_player(env: Env, hunt_id: u64, player: Address) -> Result<(), HuntErrorCode> {
-    player.require_auth();
+        player.require_auth();
 
-    if Storage::is_pause_registrations(&env) {
-        return Err(HuntErrorCode::RegistrationsPaused);
+        if Storage::is_pause_registrations(&env) {
+            return Err(HuntErrorCode::RegistrationsPaused);
+        }
+
+        let hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
+
+        if hunt.status != HuntStatus::Active {
+            return Err(HuntErrorCode::InvalidHuntStatus);
+        }
+
+        let current_time = env.ledger().timestamp();
+        if !hunt.is_active(current_time) {
+            return Err(HuntErrorCode::HuntNotActive);
+        }
+
+        if Storage::get_player_progress(&env, hunt_id, &player).is_some() {
+            return Err(HuntErrorCode::DuplicateRegistration);
+        }
+
+        let progress = PlayerProgress::new(&env, player.clone(), hunt_id, current_time);
+        Storage::save_player_progress(&env, &progress);
+
+        let event = PlayerRegisteredEvent {
+            hunt_id,
+            player: player.clone(),
+        };
+        env.events()
+            .publish((Symbol::new(&env, "PlayerRegistered"), hunt_id), event);
+
+        Ok(())
     }
-
-    let hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
-
-    if hunt.status != HuntStatus::Active {
-        return Err(HuntErrorCode::InvalidHuntStatus);
-    }
-
-    let current_time = env.ledger().timestamp();
-    if !hunt.is_active(current_time) {
-        return Err(HuntErrorCode::HuntNotActive);
-    }
-
-    if Storage::get_player_progress(&env, hunt_id, &player).is_some() {
-        return Err(HuntErrorCode::DuplicateRegistration);
-    }
-
-    let progress = PlayerProgress::new(&env, player.clone(), hunt_id, current_time);
-    Storage::save_player_progress(&env, &progress);
-
-    let event = PlayerRegisteredEvent {
-        hunt_id,
-        player: player.clone(),
-    };
-    env.events()
-        .publish((Symbol::new(&env, "PlayerRegistered"), hunt_id), event);
-
-    Ok(())
-}
 
     /// This function verifies the submitted answer by hashing it and comparing
     /// with the stored answer hash. If correct, updates player progress and emits
@@ -1344,7 +1350,6 @@ pub fn get_health_dashboard(env: Env) -> monitoring::ContractHealth {
     monitoring::Monitoring::health_dashboard(&env)
 }
     }
-}
 
 mod admin;
 mod errors;

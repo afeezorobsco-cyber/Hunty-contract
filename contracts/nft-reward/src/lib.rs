@@ -5,6 +5,9 @@ use soroban_sdk::{
 };
 
 const MAX_URI_LEN: usize = 512;
+const MAX_NFT_TITLE_BYTES: u32 = 128;
+const MAX_NFT_DESCRIPTION_BYTES: u32 = 1024;
+const MAX_NFT_URI_BYTES: u32 = 512;
 
 /// Core display metadata for an NFT (title, description, image URI).
 /// Supports off-chain storage references to keep gas costs low.
@@ -164,15 +167,6 @@ pub struct AdminImageUrisUpdatedEvent {
     pub updated_count: u32,
 }
 
-/// Event emitted when an owner changes operator approval.
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct OperatorChangedEvent {
-    pub owner: Address,
-    pub operator: Address,
-    pub approved: bool,
-}
-
 mod errors;
 pub use errors::NftErrorCode;
 mod migration;
@@ -180,17 +174,17 @@ mod sanitization;
 mod storage;
 use storage::Storage;
 
-const CONTRACT_VERSION: u32 = 1;
-
 #[contract]
 pub struct NftReward;
 
 /// Current metadata schema version (bump when adding/changing NftMetadata shape).
 pub const METADATA_SCHEMA_VERSION: u32 = 1;
 
+/// Contract version constant.
+pub const CONTRACT_VERSION: u32 = 2;
+
 #[contractimpl]
 impl NftReward {
-    const CONTRACT_VERSION: u32 = 2;
     /// Initializes the NFT reward contract with an admin address and optional max supply cap.
     /// Call this once to set the admin who can manage the contract.
     pub fn initialize(
@@ -399,6 +393,7 @@ impl NftReward {
         Storage::save_nft(&env, &nft_data);
         Storage::set_nft_version(&env, nft_id, METADATA_SCHEMA_VERSION);
         Storage::add_nft_to_owner(&env, &player_address, nft_id);
+        Storage::add_nft_to_hunt(&env, hunt_id, nft_id);
         Storage::mark_hunt_minted(&env, hunt_id);
 
         let event = NftMintedEvent {
@@ -488,12 +483,10 @@ impl NftReward {
     ) -> Result<u32, crate::errors::NftErrorCode> {
         Self::require_admin(&env, &admin)?;
 
-        let total = Storage::get_nft_counter(&env);
+        let all_ids = Storage::get_all_nft_ids(&env);
         let mut updated: u32 = 0;
-        let old_len = old_prefix.len() as usize;
-        let new_len = new_prefix.len() as usize;
 
-        for nft_id in 1..=total {
+        for nft_id in all_ids.iter() {
             if let Some(mut nft) = Storage::get_nft(&env, nft_id) {
                 if let Some(new_uri) = replace_prefix(
                     &env,
@@ -972,7 +965,7 @@ impl NftReward {
 
     /// Returns the on-chain version stored during initialize, or the compiled constant.
     pub fn contract_version(env: Env) -> u32 {
-        Storage::get_contract_version(&env).unwrap_or(CONTRACT_VERSION)
+        Storage::get_contract_version(&env).unwrap_or(crate::CONTRACT_VERSION)
     }
 
     /// Grants `operator` the ability to manage all NFTs owned by `owner`.

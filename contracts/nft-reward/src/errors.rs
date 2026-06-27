@@ -16,4 +16,5 @@ pub enum NftErrorCode {
     NotOperator = 10,
     NftNotTransferable = 11,
     NftLocked = 12,
+    InvalidMetadata = 13,
 }

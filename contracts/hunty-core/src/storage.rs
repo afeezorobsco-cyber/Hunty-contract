@@ -1,5 +1,5 @@
 use crate::errors::HuntError;
-use crate::types::{Clue, Hunt, PlayerProgress};
+use crate::types::{Clue, Hunt, LeaderboardIndexEntry, PlayerProgress};
 use soroban_sdk::{symbol_short, Address, Env, IntoVal, Vec};
 
 /// Storage access layer for hunts, clues, and player progress.
@@ -52,6 +52,7 @@ impl Storage {
     const CLUE_KEY: soroban_sdk::Symbol = symbol_short!("CLUE");
     const PROGRESS_KEY: soroban_sdk::Symbol = symbol_short!("PROG");
     const PLAYERS_LIST_KEY: soroban_sdk::Symbol = symbol_short!("PLRS");
+    const LEADERBOARD_KEY: soroban_sdk::Symbol = symbol_short!("LBRD");
     const CLUES_LIST_KEY: soroban_sdk::Symbol = symbol_short!("CLST");
     const HUNT_COUNTER_KEY: soroban_sdk::Symbol = symbol_short!("CNTR");
     const CLUE_COUNTER_KEY: soroban_sdk::Symbol = symbol_short!("CCNT");
@@ -313,6 +314,25 @@ impl Storage {
         progress_list
     }
 
+    pub fn save_leaderboard_index(
+        env: &Env,
+        hunt_id: u64,
+        entries: &Vec<LeaderboardIndexEntry>,
+    ) {
+        let key = Self::leaderboard_key(hunt_id);
+        env.storage().persistent().set(&key, entries);
+        extend_ttl(env, &key, TtlPolicy::Active);
+    }
+
+    pub fn get_leaderboard_index(env: &Env, hunt_id: u64) -> Vec<LeaderboardIndexEntry> {
+        let key = Self::leaderboard_key(hunt_id);
+        let result: Option<Vec<LeaderboardIndexEntry>> = env.storage().persistent().get(&key);
+        if result.is_some() {
+            extend_ttl(env, &key, TtlPolicy::Active);
+        }
+        result.unwrap_or_else(|| Vec::new(env))
+    }
+
     // ========== Helper Functions for Key Generation ==========
 
     /// Generates a storage key for a hunt using a symbol prefix and hunt_id.
@@ -348,6 +368,10 @@ impl Storage {
     /// Uses tuple key (PLAYERS_LIST_KEY, hunt_id) for efficient storage access.
     fn players_list_key(hunt_id: u64) -> (soroban_sdk::Symbol, u64) {
         (Self::PLAYERS_LIST_KEY, hunt_id)
+    }
+
+    fn leaderboard_key(hunt_id: u64) -> (soroban_sdk::Symbol, u64) {
+        (Self::LEADERBOARD_KEY, hunt_id)
     }
 
     /// Key for view-only addresses for a hunt.

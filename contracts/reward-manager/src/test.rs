@@ -3,9 +3,9 @@ mod test {
     use crate::errors::RewardErrorCode;
     use crate::storage::Storage;
     use crate::types::RewardConfig;
-    use crate::RewardManager;
-use soroban_sdk::testutils::{Address as _, Ledger as _};
-use soroban_sdk::{symbol_short, token, Address, Env, Symbol, Vec};
+    use crate::{RewardManager, RewardsDistributedEvent};
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _};
+use soroban_sdk::{symbol_short, token, Address, Env, IntoVal, Symbol, TryFromVal, Val, Vec};
 
     /// Registers the RewardManager contract and a mock SAC token.
     /// Returns (contract_id, token_address, token_admin).
@@ -45,6 +45,23 @@ use soroban_sdk::{symbol_short, token, Address, Env, Symbol, Vec};
             nft_rarity: 0,
             nft_tier: 0,
         }
+    }
+
+    fn find_event<T: TryFromVal<Env, Val>>(env: &Env, topic: Symbol) -> Option<(Vec<Val>, T)> {
+        let expected_topic = topic.into_val(env);
+        let events = env.events().all();
+        let mut idx = 0;
+        while idx < events.len() {
+            let event = events.get(idx).unwrap();
+            let topics = event.1.clone();
+            if topics.len() > 0 && topics.get(0).unwrap() == expected_topic {
+                if let Ok(data) = T::try_from_val(env, &event.2) {
+                    return Some((topics, data));
+                }
+            }
+            idx += 1;
+        }
+        None
     }
 
     #[contract]
@@ -1067,6 +1084,39 @@ use soroban_sdk::{symbol_short, token, Address, Env, Symbol, Vec};
                 1,
                 player.clone()
             ));
+        });
+    }
+
+    #[test]
+    fn test_rewards_distributed_event_topics_and_data() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, token_address, token_admin) = setup(&env);
+        let creator = Address::generate(&env);
+        let player = Address::generate(&env);
+
+        mint_tokens(&env, &token_address, &token_admin, &creator, 100_000_000);
+
+        env.as_contract(&contract_id, || {
+            initialize_contract(&env, &token_address);
+            RewardManager::create_reward_pool(env.clone(), creator.clone(), 7, 0).unwrap();
+            RewardManager::fund_reward_pool(env.clone(), creator.clone(), 7, 50_000_000).unwrap();
+
+            let config = xlm_only_config(&env, 20_000_000);
+            RewardManager::distribute_rewards(env.clone(), 7, player.clone(), config).unwrap();
+
+            let (topics, event) = find_event::<RewardsDistributedEvent>(
+                &env,
+                symbol_short!("RWD_DIST"),
+            )
+            .expect("missing rewards distribution event");
+            assert_eq!(topics.len(), 2);
+            assert_eq!(topics.get(0).unwrap(), symbol_short!("RWD_DIST").into_val(&env));
+            assert_eq!(topics.get(1).unwrap(), 7u64.into_val(&env));
+            assert_eq!(event.hunt_id, 7);
+            assert_eq!(event.player, player);
+            assert_eq!(event.xlm_amount, 20_000_000);
+            assert_eq!(event.nft_id, None);
         });
     }
 

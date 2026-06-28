@@ -341,6 +341,16 @@ pub struct LeaderboardEntry {
     pub is_completed: bool,
 }
 
+/// Stored top-N leaderboard entry maintained incrementally on score changes.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeaderboardIndexEntry {
+    pub player: Address,
+    pub score: u32,
+    pub completed_at: u64,
+    pub is_completed: bool,
+}
+
 /// Aggregate statistics for a hunt (read-only query result).
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -4,8 +4,9 @@ use crate::storage::Storage;
 use crate::types::{
     AnswerIncorrectEvent, Clue, ClueAddedEvent, ClueCompletedEvent, ClueInfo, Hunt,
     HuntActivatedEvent, HuntCancelledEvent, HuntCompletedEvent, HuntCreatedEvent,
-    HuntDeactivatedEvent, HuntStatistics, HuntStatus, LeaderboardEntry, PlayerProgress,
-    PlayerRegisteredEvent, RateLimitStatus, RewardClaimedEvent, RewardConfig,
+    HuntDeactivatedEvent, HuntStatistics, HuntStatus, LeaderboardEntry,
+    LeaderboardIndexEntry, PlayerProgress, PlayerRegisteredEvent, RateLimitStatus,
+    RewardClaimedEvent, RewardConfig,
 };
 use reward_interface::RewardErrorCode;
 use soroban_sdk::{
@@ -19,9 +20,6 @@ const MAX_ANSWER_LENGTH: u32 = 256;
 const MAX_CLUES_PER_HUNT: u32 = 100;
 /// Maximum number of leaderboard entries returned (gas and UX limit).
 const MAX_LEADERBOARD_SIZE: u32 = 20;
-/// Maximum number of player records scanned when building leaderboard responses.
-/// This prevents unbounded gas growth for large hunts.
-const MAX_LEADERBOARD_SCAN_SIZE: u32 = 200;
 /// Maximum batch size for paginated list operations (gas protection).
 const MAX_BATCH_SIZE: u32 = 50;
 /// Default page size for paginated queries.
@@ -939,6 +937,7 @@ impl HuntyCore {
         }
 
         Storage::save_player_progress(&env, &progress);
+        Self::update_leaderboard_index(&env, &progress);
 
         let clue_completed_event = ClueCompletedEvent {
             hunt_id,
@@ -1085,85 +1084,83 @@ impl HuntyCore {
     ) -> Result<Vec<LeaderboardEntry>, HuntErrorCode> {
         let _ = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
         let effective_limit = core::cmp::min(limit, MAX_LEADERBOARD_SIZE);
-        let players = Storage::get_hunt_players(&env, hunt_id);
-        let scan_limit = core::cmp::min(players.len(), MAX_LEADERBOARD_SCAN_SIZE);
-        let mut entries = Vec::new(&env);
-        for i in 0..scan_limit {
-            let p = players.get(i).unwrap();
-            entries.push_back((
-                p.player.clone(),
-                p.total_score,
-                p.completed_at,
-                p.is_completed,
-            ));
-        }
-        let mut selected = Vec::new(&env);
+        let entries = Storage::get_leaderboard_index(&env, hunt_id);
         let mut result = Vec::new(&env);
-        for rank in 1..=effective_limit {
-            if let Some(best_idx) = Self::leaderboard_best_index(&entries, &selected) {
-                selected.push_back(best_idx);
-                let (player, score, completed_at, is_completed) = entries.get(best_idx).unwrap();
-                result.push_back(LeaderboardEntry {
-                    rank,
-                    player,
-                    score,
-                    completed_at,
-                    is_completed,
-                });
-            } else {
-                break;
-            }
+        let result_len = core::cmp::min(effective_limit, entries.len());
+        for i in 0..result_len {
+            let entry = entries.get(i).unwrap();
+            result.push_back(LeaderboardEntry {
+                rank: i + 1,
+                player: entry.player,
+                score: entry.score,
+                completed_at: entry.completed_at,
+                is_completed: entry.is_completed,
+            });
         }
         Ok(result)
     }
 
-    /// Picks the index of the best entry not in `selected`. Order: score desc, then completed_at asc (0 = last).
-    fn leaderboard_best_index(
-        entries: &Vec<(Address, u32, u64, bool)>,
-        selected: &Vec<u32>,
-    ) -> Option<u32> {
-        let n = entries.len();
-        let mut best_idx: Option<u32> = None;
-        for i in 0..n {
-            let mut taken = false;
-            for j in 0..selected.len() {
-                if selected.get(j).unwrap() == i {
-                    taken = true;
-                    break;
-                }
-            }
-            if taken {
-                continue;
-            }
-            let (_, score, completed_at, _) = entries.get(i).unwrap();
-            let better = match best_idx {
-                None => true,
-                Some(bi) => {
-                    let (_, b_score, b_completed_at, _) = entries.get(bi).unwrap();
-                    if score > b_score {
-                        true
-                    } else if score == b_score {
-                        let a_val = if completed_at == 0 {
-                            u64::MAX
-                        } else {
-                            completed_at
-                        };
-                        let b_val = if b_completed_at == 0 {
-                            u64::MAX
-                        } else {
-                            b_completed_at
-                        };
-                        a_val < b_val
-                    } else {
-                        false
-                    }
-                }
-            };
-            if better {
-                best_idx = Some(i);
+    fn update_leaderboard_index(env: &Env, progress: &PlayerProgress) {
+        let mut entries = Storage::get_leaderboard_index(env, progress.hunt_id);
+        let updated = LeaderboardIndexEntry {
+            player: progress.player.clone(),
+            score: progress.total_score,
+            completed_at: progress.completed_at,
+            is_completed: progress.is_completed,
+        };
+
+        let mut existing_idx: Option<u32> = None;
+        for i in 0..entries.len() {
+            let entry = entries.get(i).unwrap();
+            if entry.player == progress.player {
+                existing_idx = Some(i);
+                break;
             }
         }
-        best_idx
+
+        if let Some(i) = existing_idx {
+            entries.remove(i);
+        }
+
+        let mut insert_at = entries.len();
+        for i in 0..entries.len() {
+            let current = entries.get(i).unwrap();
+            if Self::leaderboard_entry_precedes(&updated, &current) {
+                insert_at = i;
+                break;
+            }
+        }
+
+        if entries.len() < MAX_LEADERBOARD_SIZE || insert_at < MAX_LEADERBOARD_SIZE {
+            entries.insert(insert_at, updated);
+            if entries.len() > MAX_LEADERBOARD_SIZE {
+                entries.pop_back();
+            }
+        }
+
+        Storage::save_leaderboard_index(env, progress.hunt_id, &entries);
+    }
+
+    fn leaderboard_entry_precedes(
+        candidate: &LeaderboardIndexEntry,
+        current: &LeaderboardIndexEntry,
+    ) -> bool {
+        if candidate.score != current.score {
+            return candidate.score > current.score;
+        }
+
+        let candidate_completed_at = if candidate.completed_at == 0 {
+            u64::MAX
+        } else {
+            candidate.completed_at
+        };
+        let current_completed_at = if current.completed_at == 0 {
+            u64::MAX
+        } else {
+            current.completed_at
+        };
+
+        candidate_completed_at < current_completed_at
     }
 
     /// Returns aggregate statistics for a hunt (read-only): total players, completion rate, average score.

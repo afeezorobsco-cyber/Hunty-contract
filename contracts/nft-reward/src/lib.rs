@@ -8,6 +8,7 @@ const MAX_URI_LEN: usize = 512;
 const MAX_NFT_TITLE_BYTES: u32 = 128;
 const MAX_NFT_DESCRIPTION_BYTES: u32 = 1024;
 const MAX_NFT_URI_BYTES: u32 = 512;
+const MAX_TRANSFER_HISTORY: u32 = 20;
 
 /// Core display metadata for an NFT (title, description, image URI).
 /// Supports off-chain storage references to keep gas costs low.
@@ -38,6 +39,17 @@ pub struct MintParams {
     pub hunt_id: u64,
     pub player_address: Address,
     pub metadata: NftMetadata,
+}
+
+/// A single transfer record in an NFT's transfer history.
+/// `from` is `None` for the initial mint (origination), and
+/// `Some(previous_owner)` for subsequent transfers.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransferRecord {
+    pub from: Option<Address>,
+    pub to: Address,
+    pub timestamp: u64,
 }
 
 fn image_uri_is_valid(uri: &String) -> bool {
@@ -566,6 +578,16 @@ impl NftReward {
         Storage::add_nft_to_hunt(&env, hunt_id, nft_id);
         Storage::mark_hunt_minted(&env, hunt_id);
 
+        Storage::save_transfer_record(
+            &env,
+            nft_id,
+            &TransferRecord {
+                from: None,
+                to: player_address.clone(),
+                timestamp: minted_at,
+            },
+        );
+
         let event = NftMintedEvent {
             nft_id,
             hunt_id,
@@ -606,6 +628,21 @@ impl NftReward {
             royalty_bps: nft.metadata.royalty_bps,
             schema_version: version,
         })
+    }
+
+    /// Returns the transfer history for an NFT.
+    ///
+    /// The history is bounded to the last `MAX_TRANSFER_HISTORY` records.
+    /// The first record (index 0) represents the mint (origination), with
+    /// `from = None`. Subsequent records represent transfers.
+    ///
+    /// # Arguments
+    /// * `nft_id` - The NFT to query
+    ///
+    /// # Returns
+    /// A Vec of TransferRecords, oldest first
+    pub fn get_nft_transfer_history(env: Env, nft_id: u64) -> Vec<TransferRecord> {
+        Storage::get_transfer_history(&env, nft_id)
     }
 
     /// Returns the configured admin address, if set.
@@ -1112,6 +1149,16 @@ impl NftReward {
         nft.owner = to_address.clone();
         Storage::save_nft(&env, &nft);
         Storage::add_nft_to_owner(&env, &to_address, nft_id);
+
+        Storage::save_transfer_record(
+            &env,
+            nft_id,
+            &TransferRecord {
+                from: Some(from_address.clone()),
+                to: to_address.clone(),
+                timestamp: env.ledger().timestamp(),
+            },
+        );
 
         env.events().publish(
             (Symbol::new(&env, "NftTransferred"), nft_id),

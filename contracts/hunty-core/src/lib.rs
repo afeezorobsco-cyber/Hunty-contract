@@ -2,12 +2,13 @@
 use crate::errors::{HuntError, HuntErrorCode};
 use crate::storage::Storage;
 use crate::types::{
-    AnswerIncorrectEvent, Clue, ClueAddedEvent, ClueAliasesAddedEvent, ClueCompletedEvent,
-    ClueInfo, CreatorBlacklistedEvent, CreatorRemovedFromBlacklistEvent, Hunt, HuntActivatedEvent,
-    HuntCancelledEvent, HuntCompletedEvent, HuntCreatedEvent, HuntDeactivatedEvent,
-    HuntStatistics, HuntStatus, LeaderboardEntry, LeaderboardIndexEntry, PlayerProgress,
-    PlayerRegisteredEvent, RateLimitStatus, RewardClaimFailedEvent, RewardClaimedEvent,
-    RewardConfig, RewardManagerSetEvent, TimeBonusConfig,
+    AnswerIncorrectEvent, CacheStats, Clue, ClueAddedEvent, ClueAliasesAddedEvent,
+    ClueCompletedEvent, ClueInfo, CreatorBlacklistedEvent, CreatorRemovedFromBlacklistEvent,
+    Hunt, HuntActivatedEvent, HuntCache, HuntCancelledEvent, HuntCompletedEvent,
+    HuntCreatedEvent, HuntDeactivatedEvent, HuntStatistics, HuntStatus, LeaderboardEntry,
+    LeaderboardIndexEntry, PlayerProgress, PlayerRegisteredEvent, RateLimitStatus,
+    RewardClaimFailedEvent, RewardClaimedEvent, RewardConfig, RewardManagerSetEvent,
+    TimeBonusConfig,
 };
 use reward_interface::RewardErrorCode;
 use soroban_sdk::{
@@ -78,6 +79,70 @@ impl HuntyCore {
         if Storage::is_contract_paused(env) {
             return Err(HuntErrorCode::ContractPaused);
         }
+        Ok(())
+    }
+
+    // ========== Cache-Aware Helpers ==========
+
+    /// Loads a hunt's cache from instance storage.
+    /// On cache miss, falls back to persistent storage, populates the cache, and returns it.
+    fn get_hunt_cache_or_load(env: &Env, hunt_id: u64) -> Result<HuntCache, HuntErrorCode> {
+        if let Some(cache) = Storage::get_hunt_cache(env, hunt_id) {
+            return Ok(cache);
+        }
+        let hunt = Storage::get_hunt(env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
+        let cache = HuntCache::from_hunt(&hunt);
+        Storage::save_hunt_cache(env, &hunt);
+        Ok(cache)
+    }
+
+    /// Validates that a hunt exists and is active using the instance cache (cheaper).
+    /// Returns the cache on success so callers can use start_multiplier_bps etc.
+    fn validate_hunt_active_cached(env: &Env, hunt_id: u64) -> Result<HuntCache, HuntErrorCode> {
+        let cache = Self::get_hunt_cache_or_load(env, hunt_id)?;
+        if cache.status != HuntStatus::Active {
+            return Err(HuntErrorCode::InvalidHuntStatus);
+        }
+        let current_time = env.ledger().timestamp();
+        if !cache.is_active(current_time) {
+            return Err(HuntErrorCode::HuntNotActive);
+        }
+        Ok(cache)
+    }
+
+    /// Validates that a hunt exists and is in draft status using the instance cache.
+    fn validate_hunt_draft_cached(env: &Env, hunt_id: u64) -> Result<HuntCache, HuntErrorCode> {
+        let cache = Self::get_hunt_cache_or_load(env, hunt_id)?;
+        if cache.status != HuntStatus::Draft {
+            return Err(HuntErrorCode::InvalidHuntStatus);
+        }
+        Ok(cache)
+    }
+
+    /// Returns aggregate cache-monitoring counters. Higher hit rate = more reads served
+    /// from the cheap instance-storage cache instead of persistent storage.
+    /// These counters reset across ledger instance TTL boundaries.
+    pub fn get_cache_stats(env: Env) -> CacheStats {
+        let hits = Storage::get_cache_hits(&env);
+        let misses = Storage::get_cache_misses(&env);
+        let hit_rate_bps = Storage::get_cache_hit_rate_bps(&env);
+        CacheStats { hits, misses, hit_rate_bps }
+    }
+
+    /// Returns the HuntCache for a hunt, repopulating it from persistent storage on miss.
+    /// Useful for off-chain indexers that want to verify cache parity with persistent state.
+    pub fn get_hunt_cache_view(env: Env, hunt_id: u64) -> Result<HuntCache, HuntErrorCode> {
+        Self::get_hunt_cache_or_load(&env, hunt_id)
+    }
+
+    /// Admin: resets cache hit/miss counters to zero so a new measurement window can start.
+    pub fn reset_cache_monitoring(env: Env, admin: Address) -> Result<(), HuntErrorCode> {
+        Self::require_admin(&env, &admin)?;
+        Storage::reset_cache_counters(&env);
+        env.events().publish(
+            (Symbol::new(&env, "CacheMonitoringReset"),),
+            (admin,),
+        );
         Ok(())
     }
 
@@ -305,14 +370,17 @@ impl HuntyCore {
             return Err(HuntErrorCode::InvalidMaxAttempts);
         }
 
-        let mut hunt = Storage::get_hunt_or_error(&env, hunt_id).map_err(HuntErrorCode::from)?;
-        if hunt.creator != caller {
+        // Fast validation using instance cache
+        let cache = Self::get_hunt_cache_or_load(&env, hunt_id)?;
+        if cache.creator != caller {
             return Err(HuntErrorCode::Unauthorized);
         }
-        if hunt.status != HuntStatus::Draft {
+        if cache.status != HuntStatus::Draft {
             return Err(HuntErrorCode::InvalidHuntStatus);
         }
 
+        // Load full hunt from persistent for mutation
+        let mut hunt = Storage::get_hunt_or_error(&env, hunt_id).map_err(HuntErrorCode::from)?;
         hunt.max_attempts_per_clue = max_attempts_per_clue;
         Storage::save_hunt(&env, &hunt);
         Ok(())
@@ -348,11 +416,12 @@ impl HuntyCore {
         is_required: bool,
         difficulty: Option<u32>,
     ) -> Result<u32, HuntErrorCode> {
-        let hunt = Storage::get_hunt_or_error(&env, hunt_id).map_err(HuntErrorCode::from)?;
-        if hunt.status != HuntStatus::Draft {
+        // Fast validation using instance cache (cheaper than persistent read)
+        let cache = Self::get_hunt_cache_or_load(&env, hunt_id)?;
+        if cache.status != HuntStatus::Draft {
             return Err(HuntErrorCode::InvalidHuntStatus);
         }
-        hunt.creator.require_auth();
+        cache.creator.require_auth();
         if Storage::get_clue_counter(&env, hunt_id) >= MAX_CLUES_PER_HUNT {
             return Err(HuntErrorCode::from(HuntError::TooManyClues {
                 hunt_id,
@@ -380,7 +449,7 @@ impl HuntyCore {
             difficulty: difficulty.unwrap_or(1),
         };
         Storage::save_clue(&env, hunt_id, &clue);
-        let mut updated = hunt;
+        let mut updated = Storage::get_hunt_or_error(&env, hunt_id).map_err(HuntErrorCode::from)?;
         updated.total_clues += 1;
         if is_required {
             updated.required_clues += 1;
@@ -421,11 +490,9 @@ impl HuntyCore {
         clue_id: u32,
         answers: Vec<String>,
     ) -> Result<(), HuntErrorCode> {
-        let hunt = Storage::get_hunt_or_error(&env, hunt_id).map_err(HuntErrorCode::from)?;
-        if hunt.status != HuntStatus::Draft {
-            return Err(HuntErrorCode::InvalidHuntStatus);
-        }
-        hunt.creator.require_auth();
+        // Fast validation using instance cache
+        let cache = Self::validate_hunt_draft_cached(&env, hunt_id)?;
+        cache.creator.require_auth();
 
         let mut clue = Storage::get_clue_or_error(&env, hunt_id, clue_id).map_err(HuntErrorCode::from)?;
 
@@ -441,7 +508,7 @@ impl HuntyCore {
         let event = ClueAliasesAddedEvent {
             hunt_id,
             clue_id,
-            creator: hunt.creator.clone(),
+            creator: cache.creator.clone(),
             aliases_count: answers.len(),
         };
         env.events().publish(
@@ -578,30 +645,31 @@ impl HuntyCore {
     }
 
     pub fn activate_hunt(env: Env, hunt_id: u64, caller: Address) -> Result<(), HuntErrorCode> {
-        let mut hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
-
-        // Verify caller is the creator
-
-        if caller != hunt.creator {
+        // Fast validation using instance cache
+        let cache = Self::get_hunt_cache_or_load(&env, hunt_id)?;
+        if caller != cache.creator {
             return Err(HuntErrorCode::Unauthorized);
         }
-
-        if hunt.status != HuntStatus::Draft {
+        if cache.status != HuntStatus::Draft {
             return Err(HuntErrorCode::InvalidHuntStatus);
         }
-
-        if hunt.total_clues == 0 {
+        if cache.total_clues == 0 {
             return Err(HuntErrorCode::NoCluesAdded);
         }
-
-        if hunt.required_clues == 0 {
+        if cache.required_clues == 0 {
             return Err(HuntErrorCode::NoRequiredClues);
         }
-
-        // Check rewards are configured if reward manager is set
-        if Storage::get_reward_manager(&env).is_some() && hunt.reward_config.max_winners == 0 {
+        if Storage::get_reward_manager(&env).is_some() && cache.max_winners == 0 {
             return Err(HuntErrorCode::NoRewardsConfigured);
         }
+
+        let current_time = env.ledger().timestamp();
+        if cache.end_time != 0 && cache.end_time <= current_time {
+            return Err(HuntErrorCode::HuntEndTimeInPast);
+        }
+
+        // Validation passed — load full hunt from persistent for mutation
+        let mut hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
 
         // Check reward pool has sufficient balance if reward manager is configured
         if let Some(reward_manager_addr) = Storage::get_reward_manager(&env) {
@@ -619,13 +687,6 @@ impl HuntyCore {
             if !hunt.has_rewards_available() {
                 return Err(HuntErrorCode::InsufficientRewardPool);
             }
-        }
-
-        let current_time = env.ledger().timestamp();
-
-        // Reject activation if end_time is set and already in the past
-        if hunt.end_time != 0 && hunt.end_time <= current_time {
-            return Err(HuntErrorCode::HuntEndTimeInPast);
         }
 
         hunt.status = HuntStatus::Active;
@@ -655,19 +716,17 @@ impl HuntyCore {
     }
 
     pub fn deactivate_hunt(env: Env, hunt_id: u64, caller: Address) -> Result<(), HuntErrorCode> {
-        // Load hunt
-        let mut hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
-
-        // Verify caller is creator
-        if caller != hunt.creator {
+        // Fast validation using instance cache
+        let cache = Self::get_hunt_cache_or_load(&env, hunt_id)?;
+        if caller != cache.creator {
             return Err(HuntErrorCode::Unauthorized);
         }
-
-        // Check hunt is Active
-        if hunt.status != HuntStatus::Active {
+        if cache.status != HuntStatus::Active {
             return Err(HuntErrorCode::InvalidHuntStatus);
         }
 
+        // Validation passed — load full hunt from persistent for mutation
+        let mut hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
         hunt.status = HuntStatus::Draft;
 
         Storage::save_hunt(&env, &hunt);
@@ -691,24 +750,22 @@ impl HuntyCore {
     pub fn cancel_hunt(env: Env, hunt_id: u64, caller: Address) -> Result<(), HuntErrorCode> {
         caller.require_auth();
 
-        // Load hunt
-        let mut hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
-        let old_status = hunt.status;
-
-        // Verify caller is creator
-        if caller != hunt.creator {
+        // Fast validation using instance cache
+        let cache = Self::get_hunt_cache_or_load(&env, hunt_id)?;
+        if caller != cache.creator {
             return Err(HuntErrorCode::Unauthorized);
         }
-
-        // Cannot cancel a completed hunt
-        if hunt.status == HuntStatus::Completed {
+        if cache.status == HuntStatus::Completed {
+            return Err(HuntErrorCode::InvalidHuntStatus);
+        }
+        if cache.status == HuntStatus::Cancelled {
             return Err(HuntErrorCode::InvalidHuntStatus);
         }
 
-        // If already cancelled, treat as invalid
-        if hunt.status == HuntStatus::Cancelled {
-            return Err(HuntErrorCode::InvalidHuntStatus);
-        }
+        let old_status = cache.status;
+
+        // Load full hunt from persistent for mutation
+        let mut hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
 
         // Handle refunds for any remaining funded reward pool balance.
         if let Some(reward_manager_addr) = Storage::get_reward_manager(&env) {
@@ -1012,16 +1069,10 @@ impl HuntyCore {
             return Err(HuntErrorCode::RegistrationsPaused);
         }
 
-        let hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
-
-        if hunt.status != HuntStatus::Active {
-            return Err(HuntErrorCode::InvalidHuntStatus);
-        }
-
         let current_time = env.ledger().timestamp();
-        if !hunt.is_active(current_time) {
-            return Err(HuntErrorCode::HuntNotActive);
-        }
+
+        // Cache read: cheaper than loading full Hunt from persistent storage
+        let _cache = Self::validate_hunt_active_cached(&env, hunt_id)?;
 
         if Storage::get_player_progress(&env, hunt_id, &player).is_some() {
             return Err(HuntErrorCode::DuplicateRegistration);
@@ -1048,14 +1099,9 @@ impl HuntyCore {
         player: Address,
         answer: String,
     ) -> bool {
-        let Some(hunt) = Storage::get_hunt(&env, hunt_id) else {
+        let Ok(cache) = Self::validate_hunt_active_cached(&env, hunt_id) else {
             return false;
         };
-
-        let current_time = env.ledger().timestamp();
-        if !hunt.is_active(current_time) {
-            return false;
-        }
 
         if Storage::get_player_progress(&env, hunt_id, &player).is_none() {
             return false;
@@ -1125,6 +1171,26 @@ impl HuntyCore {
         (base_points as u64 * multiplier_bps as u64 / 10000) as u32
     }
 
+    /// Score calculation variant that reads start_multiplier_bps from HuntCache
+    /// instead of the full Hunt struct. Avoids a persistent storage read when
+    /// the cache is already loaded.
+    fn calculate_score_from_cache(
+        cache: &HuntCache,
+        clue: &Clue,
+        started_at: u64,
+        completed_at: u64,
+    ) -> u32 {
+        let elapsed = completed_at.saturating_sub(started_at);
+        let decrease_steps = elapsed / 50;
+        let decrease_bps = decrease_steps * 5000;
+        let multiplier_bps = core::cmp::max(
+            10000,
+            cache.start_multiplier_bps.saturating_sub(decrease_bps as u32),
+        );
+        let base_points = clue.points.saturating_mul(clue.difficulty);
+        (base_points as u64 * multiplier_bps as u64 / 10000) as u32
+    }
+
     pub fn submit_answer(
         env: Env,
         hunt_id: u64,
@@ -1141,13 +1207,10 @@ impl HuntyCore {
             return Err(HuntErrorCode::AnswersPaused);
         }
 
-        // 1. Verify hunt exists and is active
-        let hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
-
         let current_time = env.ledger().timestamp();
-        if !hunt.is_active(current_time) {
-            return Err(HuntErrorCode::HuntNotActive);
-        }
+
+        // Fast validation using instance cache (cheaper than persistent read)
+        let cache = Self::validate_hunt_active_cached(&env, hunt_id)?;
 
         if Storage::is_banned(&env, hunt_id, &player) {
             return Err(HuntErrorCode::BannedPlayer);
@@ -1185,7 +1248,7 @@ impl HuntyCore {
             return Err(HuntErrorCode::ClueAlreadyCompleted);
         }
 
-        if hunt.max_submissions_per_minute > 0 {
+        if cache.max_submissions_per_minute > 0 {
             let mut updated_submissions = Vec::new(&env);
             for i in 0..progress.recent_submissions.len() {
                 let ts = progress.recent_submissions.get(i).unwrap();
@@ -1195,7 +1258,7 @@ impl HuntyCore {
             }
             progress.recent_submissions = updated_submissions;
 
-            if progress.recent_submissions.len() >= hunt.max_submissions_per_minute {
+            if progress.recent_submissions.len() >= cache.max_submissions_per_minute {
                 let oldest_ts = progress.recent_submissions.get(0).unwrap();
                 let elapsed = current_time.saturating_sub(oldest_ts);
                 let cooldown_remaining = 60u64.saturating_sub(elapsed);
@@ -1231,10 +1294,10 @@ impl HuntyCore {
             return Err(HuntErrorCode::InvalidAnswer);
         }
 
-        let score = Self::calculate_score(&hunt, &clue, progress.started_at, current_time);
+        let score = Self::calculate_score_from_cache(&cache, &clue, progress.started_at, current_time);
         progress.complete_clue(&env, clue_id, score)?;
 
-        if hunt.max_submissions_per_minute > 0 {
+        if cache.max_submissions_per_minute > 0 {
             progress.recent_submissions = Vec::new(&env);
         }
 
@@ -1246,7 +1309,7 @@ impl HuntyCore {
             progress.is_completed = true;
             progress.completed_at = current_time;
 
-            // Rank is incremented on hunt struct (O(1)) and used for the event.
+            // Load full hunt from persistent only when we need to mutate it
             let mut hunt_mut =
                 Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
             hunt_mut.completed_count += 1;
@@ -1302,13 +1365,10 @@ impl HuntyCore {
             return Err(HuntErrorCode::AnswersPaused);
         }
 
-        // 1. Verify hunt exists and is active
-        let hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
-
         let current_time = env.ledger().timestamp();
-        if !hunt.is_active(current_time) {
-            return Err(HuntErrorCode::HuntNotActive);
-        }
+
+        // Fast validation using instance cache (cheaper than persistent read)
+        let cache = Self::validate_hunt_active_cached(&env, hunt_id)?;
 
         if Storage::is_banned(&env, hunt_id, &player) {
             return Err(HuntErrorCode::BannedPlayer);
@@ -1346,7 +1406,7 @@ impl HuntyCore {
             return Err(HuntErrorCode::ClueAlreadyCompleted);
         }
 
-        if hunt.max_submissions_per_minute > 0 {
+        if cache.max_submissions_per_minute > 0 {
             let mut updated_submissions = Vec::new(&env);
             for i in 0..progress.recent_submissions.len() {
                 let ts = progress.recent_submissions.get(i).unwrap();
@@ -1356,7 +1416,7 @@ impl HuntyCore {
             }
             progress.recent_submissions = updated_submissions;
 
-            if progress.recent_submissions.len() >= hunt.max_submissions_per_minute {
+            if progress.recent_submissions.len() >= cache.max_submissions_per_minute {
                 let oldest_ts = progress.recent_submissions.get(0).unwrap();
                 let elapsed = current_time.saturating_sub(oldest_ts);
                 let cooldown_remaining = 60u64.saturating_sub(elapsed);
@@ -1367,7 +1427,7 @@ impl HuntyCore {
         }
 
         if answer_hash != clue.answer_hash {
-            if hunt.max_submissions_per_minute > 0 {
+            if cache.max_submissions_per_minute > 0 {
                 progress.recent_submissions.push_back(current_time);
                 Storage::save_player_progress(&env, &progress);
             }
@@ -1384,10 +1444,10 @@ impl HuntyCore {
             return Err(HuntErrorCode::InvalidAnswer);
         }
 
-        let score = Self::calculate_score(&hunt, &clue, progress.started_at, current_time);
+        let score = Self::calculate_score_from_cache(&cache, &clue, progress.started_at, current_time);
         progress.complete_clue(&env, clue_id, score)?;
 
-        if hunt.max_submissions_per_minute > 0 {
+        if cache.max_submissions_per_minute > 0 {
             progress.recent_submissions = Vec::new(&env);
         }
 
@@ -1567,7 +1627,8 @@ impl HuntyCore {
         hunt_id: u64,
         limit: u32,
     ) -> Result<Vec<LeaderboardEntry>, HuntErrorCode> {
-        let _ = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
+        // Cache existence check (cheaper than loading full Hunt)
+        Storage::get_hunt_cache(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
         let effective_limit = core::cmp::min(limit, MAX_LEADERBOARD_SIZE);
         let entries = Storage::get_leaderboard_index(&env, hunt_id);
         let mut result = Vec::new(&env);
@@ -1597,7 +1658,8 @@ impl HuntyCore {
         start_index: u32,
         window_size: u32,
     ) -> Result<crate::types::LeaderboardWindow, HuntErrorCode> {
-        let _ = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
+        // Cache existence check (cheaper than loading full Hunt)
+        Storage::get_hunt_cache(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
         let queried_at = env.ledger().timestamp();
         let players = Storage::get_hunt_players(&env, hunt_id);
         let total_players = players.len();
@@ -1744,7 +1806,8 @@ impl HuntyCore {
     /// Returns aggregate statistics for a hunt (read-only): total players, completion rate, average score.
     /// Returns error if hunt does not exist.
     pub fn get_hunt_statistics(env: Env, hunt_id: u64) -> Result<HuntStatistics, HuntErrorCode> {
-        let _ = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
+        // Cache existence check (cheaper than loading full Hunt)
+        Storage::get_hunt_cache(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
         let players = Storage::get_hunt_players(&env, hunt_id);
         let total_players = players.len();
         let mut completed_count: u32 = 0;
@@ -1793,10 +1856,11 @@ pub fn add_view_only_access(
 ) -> Result<(), HuntErrorCode> {
     creator.require_auth();
 
-    let hunt = Storage::get_hunt(&env, hunt_id)
+    // Cache read (cheaper than loading full Hunt from persistent)
+    let cache = Storage::get_hunt_cache(&env, hunt_id)
         .ok_or(HuntErrorCode::HuntNotFound)?;
 
-    if hunt.creator != creator {
+    if cache.creator != creator {
         return Err(HuntErrorCode::Unauthorized);
     }
 
@@ -1812,10 +1876,11 @@ pub fn remove_view_only_access(
 ) -> Result<(), HuntErrorCode> {
     creator.require_auth();
 
-    let hunt = Storage::get_hunt(&env, hunt_id)
+    // Cache read (cheaper than loading full Hunt from persistent)
+    let cache = Storage::get_hunt_cache(&env, hunt_id)
         .ok_or(HuntErrorCode::HuntNotFound)?;
 
-    if hunt.creator != creator {
+    if cache.creator != creator {
         return Err(HuntErrorCode::Unauthorized);
     }
 

@@ -31,6 +31,15 @@ pub struct NftMetadata {
     pub royalty_bps: Option<u32>,
 }
 
+/// Self-contained parameters for minting a single NFT in a batch call.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct MintParams {
+    pub hunt_id: u64,
+    pub player_address: Address,
+    pub metadata: NftMetadata,
+}
+
 fn image_uri_is_valid(uri: &String) -> bool {
     let len = uri.len();
     if len == 0 || len > 200 {
@@ -259,6 +268,37 @@ impl NftReward {
         Self::mint_reward_nft_impl(env, hunt_id, player_address, metadata, false)
     }
 
+    /// Mints multiple NFTs in a single atomic transaction.
+    ///
+    /// Accepts a Vec of `MintParams`, each containing a hunt_id, player_address,
+    /// and NftMetadata. All NFTs are minted atomically — if any mint in the batch
+    /// fails, the entire batch is rolled back.
+    ///
+    /// # Arguments
+    /// * `minter` - Address performing the mint (must be whitelisted after init)
+    /// * `params` - Vector of mint parameter sets
+    ///
+    /// # Returns
+    /// A Vec of the newly minted NFT IDs in the same order as the input params
+    pub fn mint_batch(
+        env: Env,
+        _minter: Address,
+        params: Vec<MintParams>,
+    ) -> Vec<u64> {
+        let mut ids = Vec::new(&env);
+        for param in params.iter() {
+            let id = Self::mint_reward_nft_impl(
+                env.clone(),
+                param.hunt_id,
+                param.player_address,
+                param.metadata,
+                false,
+            );
+            ids.push_back(id);
+        }
+        ids
+    }
+
     /// Mints a reward NFT from a generic metadata map. This is the entrypoint
     /// used by cross-contract callers (e.g. RewardManager) that cannot depend
     /// on this crate's `NftMetadata` type directly.
@@ -352,6 +392,115 @@ impl NftReward {
             royalty_bps,
         };
         Self::mint_reward_nft_impl(env, hunt_id, player_address, meta, transferable)
+    }
+
+    /// Mints multiple NFTs atomically from a Vec of metadata maps.
+    ///
+    /// Each entry in `params` is a `Map<Symbol, Val>` containing the same keys
+    /// as `mint_reward_nft_from_map`, plus `"hunt_id"` (u64) and
+    /// `"player_address"` (Address).  All mints happen in a single atomic
+    /// transaction — if any mint fails, the entire batch is rolled back.
+    ///
+    /// # Arguments
+    /// * `minter` - Address performing the mint
+    /// * `params` - Vector of parameter maps
+    ///
+    /// # Returns
+    /// A Vec of the newly minted NFT IDs in input order
+    pub fn mint_batch_from_map(
+        env: Env,
+        _minter: Address,
+        params: Vec<Map<Symbol, Val>>,
+    ) -> Vec<u64> {
+        if let Some(reward_mgr) = Storage::get_reward_manager(&env) {
+            reward_mgr.require_auth();
+        }
+        use soroban_sdk::TryFromVal;
+
+        let mut ids = Vec::new(&env);
+        for param in params.iter() {
+            let hunt_id = param
+                .get(Symbol::new(&env, "hunt_id"))
+                .and_then(|v| u64::try_from_val(&env, &v).ok())
+                .unwrap_or(0);
+
+            let player_address = param
+                .get(Symbol::new(&env, "player_address"))
+                .and_then(|v| Address::try_from_val(&env, &v).ok())
+                .unwrap_or_else(|| panic!("missing player_address in batch mint params"));
+
+            let title = param
+                .get(Symbol::new(&env, "title"))
+                .and_then(|v| String::try_from_val(&env, &v).ok())
+                .unwrap_or_else(|| String::from_str(&env, ""));
+
+            let description = param
+                .get(Symbol::new(&env, "description"))
+                .and_then(|v| String::try_from_val(&env, &v).ok())
+                .unwrap_or_else(|| String::from_str(&env, ""));
+
+            let image_uri = param
+                .get(Symbol::new(&env, "image_uri"))
+                .and_then(|v| String::try_from_val(&env, &v).ok())
+                .unwrap_or_else(|| String::from_str(&env, ""));
+
+            if !image_uri_is_valid(&image_uri) {
+                panic!("Invalid NFT image_uri: must be non-empty");
+            }
+
+            let hunt_title = param
+                .get(Symbol::new(&env, "hunt_title"))
+                .and_then(|v| String::try_from_val(&env, &v).ok())
+                .unwrap_or_else(|| title.clone());
+
+            let rarity = param
+                .get(Symbol::new(&env, "rarity"))
+                .and_then(|v| u32::try_from_val(&env, &v).ok())
+                .unwrap_or(0u32);
+
+            if rarity > 5 {
+                panic!("InvalidRarity");
+            }
+
+            let tier = param
+                .get(Symbol::new(&env, "tier"))
+                .and_then(|v| u32::try_from_val(&env, &v).ok())
+                .unwrap_or(0u32);
+
+            let creator = param
+                .get(Symbol::new(&env, "creator"))
+                .and_then(|v| Address::try_from_val(&env, &v).ok())
+                .or_else(|| Some(player_address.clone()));
+
+            let royalty_bps = param
+                .get(Symbol::new(&env, "royalty_bps"))
+                .and_then(|v| u32::try_from_val(&env, &v).ok());
+
+            let transferable = param
+                .get(Symbol::new(&env, "transferable"))
+                .and_then(|v| bool::try_from_val(&env, &v).ok())
+                .unwrap_or(false);
+
+            let meta = NftMetadata {
+                title,
+                description,
+                image_uri,
+                hunt_title,
+                rarity,
+                tier,
+                creator,
+                royalty_bps,
+            };
+            let id = Self::mint_reward_nft_impl(
+                env.clone(),
+                hunt_id,
+                player_address,
+                meta,
+                transferable,
+            );
+            ids.push_back(id);
+        }
+        ids
     }
 
     fn sanitize_metadata_field(

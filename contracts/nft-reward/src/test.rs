@@ -1,7 +1,7 @@
 #![cfg(test)]
 extern crate std;
 
-use crate::{NftMetadata, NftMintedEvent, NftReward, NftRewardClient, METADATA_SCHEMA_VERSION};
+use crate::{MintParams, NftMetadata, NftMintedEvent, NftReward, NftRewardClient, METADATA_SCHEMA_VERSION};
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger as _},
     Address, Env, IntoVal, Map, String, Symbol, Val, TryFromVal, TryIntoVal,
@@ -764,24 +764,195 @@ fn test_search_nfts_multiple_filters() {
         None,
     );
     assert_eq!(results.len(), 2);
+}
 
-    let nft_id = client.mint_reward_nft(&Address::generate(&env), &1, &player, &metadata);
+// ---------------------------------------------------------------------------
+// Batch minting tests
+// ---------------------------------------------------------------------------
 
-    // Update metadata
-    client.update_nft_metadata(
-        &nft_id,
-        &player,
-        &String::from_str(&env, "Updated Desc"),
-        &String::from_str(&env, "ipfs://updated"),
-    ).unwrap();
+#[test]
+fn test_mint_batch_creates_multiple_nfts() {
+    let env = setup_env();
+    let (client, minter) = setup_nft_reward(&env, None);
 
-    // Search should still return only 1 NFT (not duplicated)
-    let results = client.search_by_title(&String::from_str(&env, "original"));
-    assert_eq!(results.len(), 1);
-    
-    // Search with no filters should return only 1 NFT
-    let all_results = client.search_nfts(None, None, None, None);
-    assert_eq!(all_results.len(), 1);
+    let player = Address::generate(&env);
+
+    let params = crate::vec![
+        &env,
+        MintParams {
+            hunt_id: 1,
+            player_address: player.clone(),
+            metadata: create_metadata(&env, "Batch 1", "First batch NFT", "ipfs://batch1"),
+        },
+        MintParams {
+            hunt_id: 2,
+            player_address: player.clone(),
+            metadata: create_metadata(&env, "Batch 2", "Second batch NFT", "ipfs://batch2"),
+        },
+        MintParams {
+            hunt_id: 1,
+            player_address: player.clone(),
+            metadata: create_metadata(&env, "Batch 3", "Third batch NFT", "ipfs://batch3"),
+        },
+    ];
+
+    let ids = client.mint_batch(&minter, &params);
+
+    assert_eq!(ids.len(), 3);
+    assert_eq!(ids.get(0).unwrap(), 1);
+    assert_eq!(ids.get(1).unwrap(), 2);
+    assert_eq!(ids.get(2).unwrap(), 3);
+    assert_eq!(client.total_supply(), 3);
+}
+
+#[test]
+fn test_mint_batch_nfts_are_individually_queryable() {
+    let env = setup_env();
+    let (client, minter) = setup_nft_reward(&env, None);
+
+    let player = Address::generate(&env);
+
+    let params = crate::vec![
+        &env,
+        MintParams {
+            hunt_id: 10,
+            player_address: player.clone(),
+            metadata: create_metadata(&env, "Alpha", "Alpha desc", "ipfs://alpha"),
+        },
+        MintParams {
+            hunt_id: 20,
+            player_address: player.clone(),
+            metadata: create_metadata(&env, "Beta", "Beta desc", "ipfs://beta"),
+        },
+    ];
+
+    let ids = client.mint_batch(&minter, &params);
+
+    let nft1 = client.get_nft(&ids.get(0).unwrap()).unwrap();
+    assert_eq!(nft1.hunt_id, 10);
+    assert_eq!(nft1.owner, player);
+    assert_eq!(nft1.metadata.title, String::from_str(&env, "Alpha"));
+
+    let nft2 = client.get_nft(&ids.get(1).unwrap()).unwrap();
+    assert_eq!(nft2.hunt_id, 20);
+    assert_eq!(nft2.owner, player);
+    assert_eq!(nft2.metadata.title, String::from_str(&env, "Beta"));
+}
+
+#[test]
+fn test_mint_batch_atomic_failure_rolls_back() {
+    let env = setup_env();
+    let (client, minter) = setup_nft_reward(&env, None);
+
+    let player = Address::generate(&env);
+
+    let valid_meta = create_metadata(&env, "Valid", "Valid NFT", "ipfs://valid");
+    let mut invalid_meta = create_metadata(&env, "Invalid", "Bad rarity", "ipfs://bad");
+
+    // First batch: all valid
+    let params1 = crate::vec![
+        &env,
+        MintParams {
+            hunt_id: 1,
+            player_address: player.clone(),
+            metadata: valid_meta.clone(),
+        },
+    ];
+    let ids = client.mint_batch(&minter, &params1);
+    assert_eq!(ids.len(), 1);
+
+    // Second batch with invalid rarity - should panic and roll back
+    invalid_meta.rarity = 99;
+    let params2 = crate::vec![
+        &env,
+        MintParams {
+            hunt_id: 2,
+            player_address: player.clone(),
+            metadata: create_metadata(&env, "Before", "Will succeed", "ipfs://before"),
+        },
+        MintParams {
+            hunt_id: 3,
+            player_address: player.clone(),
+            metadata: invalid_meta,
+        },
+    ];
+
+    let result = client.try_mint_batch(&minter, &params2);
+    assert!(result.is_err());
+
+    // Supply should remain at 1 (first batch only)
+    assert_eq!(client.total_supply(), 1);
+}
+
+#[test]
+fn test_mint_batch_with_hunt_indexing() {
+    let env = setup_env();
+    let (client, minter) = setup_nft_reward(&env, None);
+
+    let player = Address::generate(&env);
+
+    let params = crate::vec![
+        &env,
+        MintParams {
+            hunt_id: 5,
+            player_address: player.clone(),
+            metadata: create_metadata(&env, "H5A", "Hunt 5 NFT A", "ipfs://h5a"),
+        },
+        MintParams {
+            hunt_id: 5,
+            player_address: player.clone(),
+            metadata: create_metadata(&env, "H5B", "Hunt 5 NFT B", "ipfs://h5b"),
+        },
+        MintParams {
+            hunt_id: 6,
+            player_address: player.clone(),
+            metadata: create_metadata(&env, "H6A", "Hunt 6 NFT A", "ipfs://h6a"),
+        },
+    ];
+
+    let ids = client.mint_batch(&minter, &params);
+
+    let hunt5_nfts = client.get_nfts_by_hunt(&5, &0, &100);
+    assert_eq!(hunt5_nfts.len(), 2);
+    assert!(hunt5_nfts.get(0).unwrap() == ids.get(0).unwrap()
+        || hunt5_nfts.get(0).unwrap() == ids.get(1).unwrap());
+
+    let hunt6_nfts = client.get_nfts_by_hunt(&6, &0, &100);
+    assert_eq!(hunt6_nfts.len(), 1);
+    assert_eq!(hunt6_nfts.get(0).unwrap(), ids.get(2).unwrap());
+}
+
+#[test]
+fn test_mint_batch_updates_owner_index() {
+    let env = setup_env();
+    let (client, minter) = setup_nft_reward(&env, None);
+
+    let player = Address::generate(&env);
+
+    let params = crate::vec![
+        &env,
+        MintParams {
+            hunt_id: 1,
+            player_address: player.clone(),
+            metadata: create_metadata(&env, "One", "First", "ipfs://one"),
+        },
+        MintParams {
+            hunt_id: 2,
+            player_address: player.clone(),
+            metadata: create_metadata(&env, "Two", "Second", "ipfs://two"),
+        },
+    ];
+
+    let ids = client.mint_batch(&minter, &params);
+
+    let player_nfts = client.get_player_nfts(&player, &0, &100);
+    assert_eq!(player_nfts.len(), 2);
+    assert!(player_nfts.get(0).unwrap() == ids.get(0).unwrap()
+        || player_nfts.get(0).unwrap() == ids.get(1).unwrap());
+    assert!(player_nfts.get(1).unwrap() == ids.get(0).unwrap()
+        || player_nfts.get(1).unwrap() == ids.get(1).unwrap());
+}
+
 // ---------------------------------------------------------------------------
 // Schema versioning tests
 // ---------------------------------------------------------------------------

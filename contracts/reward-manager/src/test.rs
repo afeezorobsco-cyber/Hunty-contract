@@ -204,6 +204,200 @@ use soroban_sdk::{symbol_short, token, Address, Env, IntoVal, Symbol, TryFromVal
         RewardManager::initialize(env.clone(), admin, token_address.clone()).unwrap();
     }
 
+    // ========== set_pool_tiers / get_pool_config / tier resolution ==========
+
+    use crate::TimeBasedRewardTier as _TimeBasedRewardTier;
+    use crate::resolve_tier_amount as _resolve_tier_amount;
+
+    fn make_tier(max_secs: u64, amount: i128) -> _TimeBasedRewardTier {
+        _TimeBasedRewardTier { max_completion_secs: max_secs, xlm_amount: amount }
+    }
+
+    #[test]
+    fn test_resolve_tier_first_fit_at_boundary() {
+        let env = Env::default();
+        // Tiers: <=60s => 100, <=3600s => 50, <=86400s => 25
+        let tiers = Vec::from_array(
+            &env,
+            [make_tier(60, 100), make_tier(3_600, 50), make_tier(86_400, 25)],
+        );
+
+        // `<=` boundary exactly matches the smallest tier
+        assert_eq!(_resolve_tier_amount(&tiers, 0), Some(100));
+        assert_eq!(_resolve_tier_amount(&tiers, 30), Some(100));
+        assert_eq!(_resolve_tier_amount(&tiers, 60), Some(100));
+
+        // Just past the first tier -> falls into the second tier
+        assert_eq!(_resolve_tier_amount(&tiers, 61), Some(50));
+        assert_eq!(_resolve_tier_amount(&tiers, 3_600), Some(50));
+
+        // Past mid-tier -> slowest tier
+        assert_eq!(_resolve_tier_amount(&tiers, 3_601), Some(25));
+        assert_eq!(_resolve_tier_amount(&tiers, 86_400), Some(25));
+
+        // Past all tiers -> last (slowest) tier is the fallback
+        assert_eq!(_resolve_tier_amount(&tiers, 1_000_000), Some(25));
+    }
+
+    #[test]
+    fn test_resolve_tier_empty_list_returns_none() {
+        let env = Env::default();
+        let tiers: Vec<_TimeBasedRewardTier> = Vec::new(&env);
+        assert_eq!(_resolve_tier_amount(&tiers, 100), None);
+        assert_eq!(_resolve_tier_amount(&tiers, 0), None);
+    }
+
+    #[test]
+    fn test_set_pool_tiers_success() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, _, _) = setup(&env);
+        let creator = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            RewardManager::create_reward_pool(env.clone(), creator.clone(), 7, 0).unwrap();
+
+            let tiers = Vec::from_array(
+                &env,
+                [make_tier(60, 100), make_tier(3_600, 50), make_tier(86_400, 25)],
+            );
+            RewardManager::set_pool_tiers(env.clone(), creator.clone(), 7, tiers).unwrap();
+
+            let cfg = RewardManager::get_pool_config(env.clone(), 7).unwrap();
+            assert_eq!(cfg.time_based_tiers.len(), 3);
+            assert_eq!(cfg.time_based_tiers.get(0).unwrap().xlm_amount, 100);
+            assert_eq!(cfg.time_based_tiers.get(1).unwrap().xlm_amount, 50);
+            assert_eq!(cfg.time_based_tiers.get(2).unwrap().xlm_amount, 25);
+        });
+    }
+
+    #[test]
+    fn test_set_pool_tiers_empty_disables_tiers() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, _, _) = setup(&env);
+        let creator = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            RewardManager::create_reward_pool(env.clone(), creator.clone(), 7, 0).unwrap();
+            // Install tiers first
+            RewardManager::set_pool_tiers(
+                env.clone(),
+                creator.clone(),
+                7,
+                Vec::from_array(&env, [make_tier(60, 100)]),
+            )
+            .unwrap();
+
+            // Now disable by passing empty
+            let empty: Vec<_TimeBasedRewardTier> = Vec::new(&env);
+            RewardManager::set_pool_tiers(env.clone(), creator.clone(), 7, empty).unwrap();
+
+            let cfg = RewardManager::get_pool_config(env.clone(), 7).unwrap();
+            assert_eq!(cfg.time_based_tiers.len(), 0);
+        });
+    }
+
+    #[test]
+    fn test_set_pool_tiers_rejects_out_of_order() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, _, _) = setup(&env);
+        let creator = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            RewardManager::create_reward_pool(env.clone(), creator.clone(), 1, 0).unwrap();
+            // Out-of-order (3_000 < 60): not strictly ascending
+            let tiers =
+                Vec::from_array(&env, [make_tier(3_000, 100), make_tier(60, 50)]);
+            let err = RewardManager::set_pool_tiers(env.clone(), creator.clone(), 1, tiers)
+                .unwrap_err();
+            assert_eq!(err, RewardErrorCode::InvalidConfig);
+        });
+    }
+
+    #[test]
+    fn test_set_pool_tiers_rejects_non_positive_amount() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, _, _) = setup(&env);
+        let creator = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            RewardManager::create_reward_pool(env.clone(), creator.clone(), 1, 0).unwrap();
+            let tiers = Vec::from_array(
+                &env,
+                [make_tier(60, 100), make_tier(3_600, 0)],
+            );
+            let err = RewardManager::set_pool_tiers(env.clone(), creator.clone(), 1, tiers)
+                .unwrap_err();
+            assert_eq!(err, RewardErrorCode::InvalidConfig);
+        });
+    }
+
+    #[test]
+    fn test_set_pool_tiers_rejects_duplicate_bound() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, _, _) = setup(&env);
+        let creator = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            RewardManager::create_reward_pool(env.clone(), creator.clone(), 1, 0).unwrap();
+            // Equal max_completion_secs across adjacent tiers: not strictly ascending
+            let tiers = Vec::from_array(
+                &env,
+                [make_tier(60, 100), make_tier(60, 50)],
+            );
+            let err = RewardManager::set_pool_tiers(env.clone(), creator.clone(), 1, tiers)
+                .unwrap_err();
+            assert_eq!(err, RewardErrorCode::InvalidConfig);
+        });
+    }
+
+    #[test]
+    fn test_set_pool_tiers_unauthorized() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, _, _) = setup(&env);
+        let creator = Address::generate(&env);
+        let attacker = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            RewardManager::create_reward_pool(env.clone(), creator.clone(), 1, 0).unwrap();
+            let tiers = Vec::from_array(&env, [make_tier(60, 100)]);
+            let err = RewardManager::set_pool_tiers(env.clone(), attacker.clone(), 1, tiers)
+                .unwrap_err();
+            assert_eq!(err, RewardErrorCode::Unauthorized);
+        });
+    }
+
+    #[test]
+    fn test_set_pool_tiers_pool_not_found() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, _, _) = setup(&env);
+        let creator = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            let tiers = Vec::from_array(&env, [make_tier(60, 100)]);
+            let err = RewardManager::set_pool_tiers(env.clone(), creator.clone(), 99, tiers)
+                .unwrap_err();
+            assert_eq!(err, RewardErrorCode::PoolNotFound);
+        });
+    }
+
+    #[test]
+    fn test_get_pool_config_returns_none_for_unknown() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, _, _) = setup(&env);
+
+        env.as_contract(&contract_id, || {
+            assert!(RewardManager::get_pool_config(env.clone(), 999).is_none());
+        });
+    }
+
     // ========== Initialization ==========
 
     #[test]
@@ -852,6 +1046,7 @@ use soroban_sdk::{symbol_short, token, Address, Env, IntoVal, Symbol, TryFromVal
             crate::storage::Storage::set_pool_config(&env, 1, &crate::types::RewardPoolConfig {
                 creator: creator.clone(),
                 min_distribution_amount: 0,
+                time_based_tiers: Vec::new(&env),
             });
             let _ = RewardManager::fund_reward_pool(env.clone(), creator.clone(), 1, 10_000_000);
         });

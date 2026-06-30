@@ -1,6 +1,9 @@
-use soroban_sdk::{contracttype, Address};
+use soroban_sdk::{contracttype, Address, Vec};
 
-pub use reward_interface::RewardConfig;
+pub use reward_interface::{
+    resolve_tier_amount, tiers_are_strictly_ascending, RewardConfig, TierError,
+    TimeBasedRewardTier,
+};
 
 /// Status of a reward distribution for a specific hunt and player.
 #[contracttype]
@@ -23,6 +26,15 @@ pub struct DistributionRecord {
 }
 
 /// Configuration for a reward pool, set at creation time.
+///
+/// `time_based_tiers` is an optional list of (max_elapsed_seconds, xlm_amount)
+/// pairs that define a conditional reward schedule based on how quickly a
+/// player completes a hunt. When the list is empty, time-based conditional
+/// rewards are disabled and the rest of the system behaves exactly as
+/// before this feature was added. When the list is non-empty it must be
+/// sorted in strictly ascending order of `max_completion_secs` (validated
+/// in `set_pool_tiers`). The list can be updated after pool creation via
+/// `set_pool_tiers` and queried via `get_pool_config`.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RewardPoolConfig {
@@ -31,6 +43,11 @@ pub struct RewardPoolConfig {
     pub creator: Address,
     /// Minimum XLM amount per distribution. 0 means no minimum enforced.
     pub min_distribution_amount: i128,
+    /// Optional time-based reward tiers. When empty, the per-winner amount
+    /// is computed from `xlm_pool / max_winners` as before. When populated,
+    /// the appropriate tier's `xlm_amount` is selected at distribution time
+    /// based on the player's (completion_time - registration_time) elapsed.
+    pub time_based_tiers: Vec<TimeBasedRewardTier>,
 }
 
 /// Full status of a reward pool, returned by get_reward_pool().

@@ -111,6 +111,16 @@ pub struct NftContractSetEvent {
     pub new_contract: Address,
 }
 
+/// Event emitted when an admin resolves a failed distribution.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct DistributionResolvedEvent {
+    pub hunt_id: u64,
+    pub player: Address,
+    pub admin: Address,
+    pub resolution: ResolutionStatus,
+}
+
 /// Event emitted when emergency withdrawal is executed.
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -743,6 +753,55 @@ impl RewardManager {
     /// Returns whether a reward has been distributed to a player for a hunt.
     pub fn is_reward_distributed(env: Env, hunt_id: u64, player: Address) -> bool {
         Storage::is_distributed(&env, hunt_id, &player)
+    }
+
+    /// Manually resolves a distribution that failed mid-execution.
+    ///
+    /// Allows the contract admin to mark a distribution as either `Completed`
+    /// or `Refunded` when the automatic distribution process could not finish
+    /// (e.g., XLM was sent but NFT mint failed). This is a bookkeeping-only
+    /// operation and does not move funds.
+    ///
+    /// # Arguments
+    /// * `admin` - The contract admin address (must match the stored admin)
+    /// * `hunt_id` - The hunt whose distribution to resolve
+    /// * `player` - The player whose distribution to resolve
+    /// * `resolution` - Outcome: `ResolutionStatus::Completed` or `ResolutionStatus::Refunded`
+    ///
+    /// # Errors
+    /// * `NotInitialized` - Contract has not been initialized (no admin set)
+    /// * `Unauthorized` - Caller is not the contract admin
+    /// * `DistributionNotFound` - No distribution record exists for this hunt/player
+    pub fn admin_resolve_distribution(
+        env: Env,
+        admin: Address,
+        hunt_id: u64,
+        player: Address,
+        resolution: ResolutionStatus,
+    ) -> Result<(), RewardErrorCode> {
+        admin.require_auth();
+        let configured_admin = Storage::get_admin(&env).ok_or(RewardErrorCode::NotInitialized)?;
+        if configured_admin != admin {
+            return Err(RewardErrorCode::Unauthorized);
+        }
+
+        if !Storage::is_distributed(&env, hunt_id, &player) {
+            return Err(RewardErrorCode::DistributionNotFound);
+        }
+
+        Storage::set_distribution_resolution(&env, hunt_id, &player, &resolution);
+
+        env.events().publish(
+            (symbol_short!("RSLV_D"), hunt_id),
+            DistributionResolvedEvent {
+                hunt_id,
+                player,
+                admin,
+                resolution,
+            },
+        );
+
+        Ok(())
     }
 
     /// Allows the admin to withdraw any unclaimed (surplus) XLM remaining in a reward pool.

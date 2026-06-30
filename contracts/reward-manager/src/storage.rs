@@ -17,6 +17,7 @@ impl Storage {
     const DISTRIBUTION_KEY: soroban_sdk::Symbol = symbol_short!("DI");
     const DIST_RECORD_KEY: soroban_sdk::Symbol = symbol_short!("DR");
     const DIST_NONCE_KEY: soroban_sdk::Symbol = symbol_short!("DN");
+    const DIST_RESOLVE_KEY: soroban_sdk::Symbol = symbol_short!("DRS");
     const POOL_KEY: soroban_sdk::Symbol = symbol_short!("POOL");
     const POOL_CFG_KEY: soroban_sdk::Symbol = symbol_short!("PC");
     const POOL_DEP_KEY: soroban_sdk::Symbol = symbol_short!("PDE");
@@ -137,6 +138,34 @@ impl Storage {
         player: &Address,
     ) -> (soroban_sdk::Symbol, u64, Address) {
         (Self::DIST_NONCE_KEY, hunt_id, player.clone())
+    }
+
+    // ========== Distribution Resolution ==========
+
+    pub fn set_distribution_resolution(
+        env: &Env,
+        hunt_id: u64,
+        player: &Address,
+        resolution: &ResolutionStatus,
+    ) {
+        let key = Self::dist_resolve_key(hunt_id, player);
+        env.storage().persistent().set(&key, resolution);
+    }
+
+    pub fn get_distribution_resolution(
+        env: &Env,
+        hunt_id: u64,
+        player: &Address,
+    ) -> Option<ResolutionStatus> {
+        let key = Self::dist_resolve_key(hunt_id, player);
+        env.storage().persistent().get(&key)
+    }
+
+    fn dist_resolve_key(
+        hunt_id: u64,
+        player: &Address,
+    ) -> (soroban_sdk::Symbol, u64, Address) {
+        (Self::DIST_RESOLVE_KEY, hunt_id, player.clone())
     }
 
     // ========== Reward Pool Balance (per hunt) ==========

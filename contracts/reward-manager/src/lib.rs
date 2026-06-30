@@ -7,8 +7,11 @@ pub use crate::errors::RewardErrorCode;
 use crate::nft_handler::NftHandler;
 use crate::storage::Storage;
 pub use crate::types::{
-    DistributionRecord, DistributionStatus, PendingNftMint, RewardConfig, RewardPoolConfig,
-    RewardPoolStatus, ValidationResult,
+    resolve_tier_amount, tiers_are_strictly_ascending, DistributionRecord, DistributionStatus,
+    RewardConfig, RewardPoolConfig, RewardPoolStatus, SemVer, TierError, TimeBasedRewardTier,
+    ValidationResult,
+    DistributionRecord, DistributionStatus, ResolutionStatus, RewardConfig, RewardPoolConfig,
+    RewardPoolStatus, SemVer, ValidationResult,
 };
 use crate::xlm_handler::XlmHandler;
 
@@ -285,6 +288,7 @@ impl RewardManager {
         let config = RewardPoolConfig {
             creator: creator.clone(),
             min_distribution_amount,
+            time_based_tiers: Vec::new(&env),
         };
         Storage::set_pool_config(&env, hunt_id, &config);
 
@@ -346,6 +350,74 @@ impl RewardManager {
         Storage::set_pool_config(&env, hunt_id, &config);
 
         Ok(())
+    }
+
+    /// Updates (or installs) the time-based reward tier schedule on an existing
+    /// reward pool, enabling conditional reward amounts based on player completion
+    /// time (acceptance criteria: "Define time-based reward tiers in pool config").
+    ///
+    /// Tiers must be supplied in strictly ascending order of `max_completion_secs`
+    /// (i.e. faster tiers first), and every `xlm_amount` must be strictly positive.
+    /// Passing an empty `Vec` disables tier-based rewards so the pool reverts
+    /// to the flat `xlm_pool / max_winners` amount.
+    ///
+    /// Only the pool creator is authorized to call this. The new tiers are
+    /// persisted immediately and become effective for any subsequent distribution
+    /// call. Already-distributed rewards are not affected.
+    ///
+    /// # Arguments
+    /// * `creator` - The pool creator (must match the stored creator)
+    /// * `hunt_id` - The hunt whose pool config to update
+    /// * `time_based_tiers` - New tier list (strictly ascending by time, all amounts > 0;
+    ///   an empty list disables tier-based rewards)
+    ///
+    /// # Errors
+    /// * `PoolNotFound` - No pool exists for this hunt_id
+    /// * `Unauthorized` - Caller is not the pool creator
+    /// * `InvalidConfig` - Tier list (when non-empty) contains a zero/negative
+    ///   amount or is not strictly ascending
+    pub fn set_pool_tiers(
+        env: Env,
+        creator: Address,
+        hunt_id: u64,
+        time_based_tiers: Vec<TimeBasedRewardTier>,
+    ) -> Result<(), RewardErrorCode> {
+        creator.require_auth();
+
+        let mut config =
+            Storage::get_pool_config(&env, hunt_id).ok_or(RewardErrorCode::PoolNotFound)?;
+
+        if creator != config.creator {
+            return Err(RewardErrorCode::Unauthorized);
+        }
+
+        // Empty tier list is a valid opt-out from tier-based rewards — it
+        // disables the feature for this pool. Non-empty lists must validate.
+        let tiers_len = time_based_tiers.len();
+        if tiers_len > 0 {
+            if let Err(_err) = tiers_are_strictly_ascending(&time_based_tiers) {
+                return Err(RewardErrorCode::InvalidConfig);
+            }
+        }
+
+        config.time_based_tiers = time_based_tiers;
+        Storage::set_pool_config(&env, hunt_id, &config);
+
+        env.events().publish(
+            (symbol_short!("POOL_TIERS"), hunt_id),
+            (creator.clone(), tiers_len),
+        );
+
+        Ok(())
+    }
+
+    /// Returns the full configuration of a reward pool, including its tier list.
+    /// `None` when no pool has been created for the given `hunt_id`.
+    ///
+    /// This is the primary read path used by HuntyCore at completion time to
+    /// resolve which tier (if any) applies to a player's completion time.
+    pub fn get_pool_config(env: Env, hunt_id: u64) -> Option<RewardPoolConfig> {
+        Storage::get_pool_config(&env, hunt_id)
     }
 
     /// Funds the reward pool for a specific hunt.

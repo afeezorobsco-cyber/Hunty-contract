@@ -587,23 +587,62 @@ impl HuntyCore {
         v <= 5
     }
 
-    fn emit_hunt_status_changed(
+    /// Resolves the XLM amount for the completing player.
+    ///
+    /// If the hunt's rewardManager-configured pool has a non-empty
+    /// `time_based_tiers` list, this returns the tier's `xlm_amount`
+    /// whose `max_completion_secs >= (completion_at - registration_at)`.
+    /// If the elapsed time exceeds every configured tier, the last
+    /// (slowest) tier's amount is used as a fallback. If the pool has no
+    /// tiers configured (or is unreachable), this falls back to the
+    /// flat `hunt.reward_config.reward_per_winner()` amount.
+    fn resolve_reward_amount(
         env: &Env,
-        hunt_id: u64,
-        old_status: HuntStatus,
-        new_status: HuntStatus,
-        changed_at: u64,
-    ) {
-        let event = HuntStatusChangedEvent {
-            hunt_id,
-            old_status,
-            new_status,
-            changed_at,
+        hunt: &Hunt,
+        progress: &PlayerProgress,
+    ) -> i128 {
+        let reward_manager_addr = match Storage::get_reward_manager(env) {
+            Some(addr) => addr,
+            None => return hunt.reward_config.reward_per_winner(),
         };
-        env.events().publish(
-            (Symbol::new(env, "HuntStatusChanged"), hunt_id),
-            event,
-        );
+
+        // Fetch pool config from RewardManager. Tiers live there.
+        // The Result<_, RewardErrorCode> shape lets us distinguish "pool
+        // missing" (a legitimate no-tiers case) from any contract error,
+        // and falls back to the flat reward on every non-Ok outcome.
+        let mut args: Vec<Val> = Vec::new(env);
+        args.push_back(hunt.hunt_id.into_val(env));
+        // get_pool_config returns Option<RewardPoolConfig> — T must match.
+        let pool_config: Option<reward_interface::RewardPoolConfig> = env
+            .try_invoke_contract::<Option<reward_interface::RewardPoolConfig>, reward_interface::RewardErrorCode>(
+                &reward_manager_addr,
+                &Symbol::new(env, "get_pool_config"),
+                args,
+            )
+            .ok()
+            .and_then(|r| r.ok());
+
+        let tiers = match pool_config.as_ref() {
+            Some(cfg) => &cfg.time_based_tiers,
+            None => return hunt.reward_config.reward_per_winner(),
+        };
+
+        if tiers.is_empty() {
+            return hunt.reward_config.reward_per_winner();
+        }
+
+        // Compute elapsed time. If for any reason started_at is missing
+        // (e.g. zero), use 0 so the smallest tier is selected.
+        let elapsed = if progress.completed_at >= progress.started_at {
+            progress.completed_at - progress.started_at
+        } else {
+            0
+        };
+
+        match reward_interface::resolve_tier_amount(tiers, elapsed) {
+            Some(amount) if amount > 0 => amount,
+            _ => hunt.reward_config.reward_per_winner(),
+        }
     }
 
     pub fn activate_hunt(env: Env, hunt_id: u64, caller: Address) -> Result<(), HuntErrorCode> {
@@ -875,6 +914,11 @@ impl HuntyCore {
     /// then distributes rewards via the RewardManager contract (if configured)
     /// and updates the player's reward status.
     ///
+    /// Reward amounts can be either flat (`xlm_pool / max_winners`) or
+    /// time-based (configured via `RewardManager::set_pool_tiers`), in which
+    /// case the amount depends on `completion_at - started_at` for the
+    /// completing player.
+    ///
     /// # Arguments
     /// * `env` - The Soroban environment
     /// * `hunt_id` - The hunt ID
@@ -922,7 +966,13 @@ impl HuntyCore {
             steps += 1;
         }
 
-        let reward_amount = hunt.reward_config.reward_per_winner();
+        // Resolve the XLM reward amount
+        // ===================== TIER-BASED AMOUNT RESOLUTION =====================
+        // If the reward pool has a tier schedule configured, the appropriate
+        // tier's xlm_amount replaces the flat `xlm_pool / max_winners` amount.
+        // Tier resolution is `(max_completion_secs - registration_time)` based.
+        let reward_amount = Self::resolve_reward_amount(&env, &hunt, &progress);
+        // =======================================================================
         let nft_awarded = hunt.reward_config.nft_enabled;
 
         if !Self::validate_rarity(hunt.reward_config.nft_rarity) {
@@ -2140,6 +2190,11 @@ pub fn get_health_dashboard(env: Env) -> monitoring::ContractHealth {
     }
 }
 
+// -----------------------------------------------------------------------------
+// View-Only Access Management
+// -----------------------------------------------------------------------------
+
+pub fn add_view_only_access(
 mod admin;
 mod errors;
 mod migration;
